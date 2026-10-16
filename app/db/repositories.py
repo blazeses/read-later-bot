@@ -273,16 +273,38 @@ class BookmarkRepository:
         total = count_res.scalar() or 0
         return items, total
 
-    async def get_random_unread(self, user_id: int) -> Optional[Bookmark]:
+    async def get_random_unread(
+        self,
+        user_id: int,
+        exclude_ids: Optional[List[uuid.UUID]] = None,
+    ) -> Optional[Bookmark]:
+        filters = [Bookmark.user_id == user_id, Bookmark.is_read.is_(False)]
+        if exclude_ids:
+            filters.append(Bookmark.id.not_in(exclude_ids))
+
         stmt = (
             select(Bookmark)
             .options(selectinload(Bookmark.tags))
-            .where(and_(Bookmark.user_id == user_id, Bookmark.is_read.is_(False)))
+            .where(and_(*filters))
             .order_by(func.random())
             .limit(1)
         )
         res = await self.session.execute(stmt)
-        return res.scalar_one_or_none()
+        bm = res.scalar_one_or_none()
+
+        # If all unread were excluded, reset exclusion and pick from all unread
+        if not bm and exclude_ids:
+            stmt_all = (
+                select(Bookmark)
+                .options(selectinload(Bookmark.tags))
+                .where(and_(Bookmark.user_id == user_id, Bookmark.is_read.is_(False)))
+                .order_by(func.random())
+                .limit(1)
+            )
+            res_all = await self.session.execute(stmt_all)
+            bm = res_all.scalar_one_or_none()
+
+        return bm
 
     async def get_stats(self, user_id: int) -> Dict[str, int]:
         total_stmt = select(func.count(Bookmark.id)).where(Bookmark.user_id == user_id)

@@ -108,6 +108,87 @@ def get_bookmark_card_keyboard(
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{bookmark_id}"),
     )
 
+    # 5. Back to list or Next Random button
+    if nav_prefix in ("recent_list", "unread_list"):
+        builder.row(
+            InlineKeyboardButton(
+                text="« 📋 Назад к списку",
+                callback_data=f"{nav_prefix}:{current_page}",
+            )
+        )
+    elif nav_prefix == "random":
+        builder.row(
+            InlineKeyboardButton(
+                text="🎲 Следующая случайная",
+                callback_data="next_random",
+            )
+        )
+
+    return builder.as_markup()
+
+
+def get_bookmarks_list_keyboard(
+    bookmarks: list,
+    current_page: int,
+    total_pages: int,
+    prefix: str = "recent_list",
+) -> InlineKeyboardMarkup:
+    """
+    Inline keyboard for interactive bookmark selection list:
+    Row of numbers [1] [2] [3]... to open each article card directly,
+    plus pagination and quick filters.
+    """
+    builder = InlineKeyboardBuilder()
+
+    # 1. Number selection buttons
+    num_buttons = []
+    for idx, b in enumerate(bookmarks, start=1):
+        num_buttons.append(
+            InlineKeyboardButton(
+                text=f"[{idx}]",
+                callback_data=f"open_bm:{b.id}:{prefix}:{current_page}",
+            )
+        )
+    if num_buttons:
+        builder.row(*num_buttons)
+
+    # 2. Pagination row
+    if total_pages > 1:
+        nav_buttons = []
+        if current_page > 1:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="« Назад",
+                    callback_data=f"{prefix}:{current_page - 1}",
+                )
+            )
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text=f"{current_page} / {total_pages}",
+                callback_data="noop",
+            )
+        )
+        if current_page < total_pages:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="Вперед »",
+                    callback_data=f"{prefix}:{current_page + 1}",
+                )
+            )
+        builder.row(*nav_buttons)
+
+    # 3. Quick mode switcher
+    if prefix == "recent_list":
+        builder.row(
+            InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="unread_list:1"),
+            InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
+        )
+    elif prefix == "unread_list":
+        builder.row(
+            InlineKeyboardButton(text="🕒 Все недавние", callback_data="recent_list:1"),
+            InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
+        )
+
     return builder.as_markup()
 
 
