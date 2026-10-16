@@ -21,14 +21,28 @@ async def init_databases():
     log.info("Checking database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Add optional columns safely and independently across PostgreSQL and SQLite
+    migration_statements = [
+        # PostgreSQL syntax:
+        "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS image_url TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_photo_id TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_video_id TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;",
+        # SQLite fallback syntax (without IF NOT EXISTS):
+        "ALTER TABLE bookmarks ADD COLUMN image_url TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN telegram_photo_id TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN telegram_video_id TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN photos_json TEXT;",
+    ]
+
+    for stmt in migration_statements:
         try:
-            await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS image_url TEXT;"))
-            await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_photo_id TEXT;"))
-            await conn.execute(text("ALTER TABLE bookmarks ALTER COLUMN telegram_photo_id TYPE TEXT;"))
-            await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_video_id TEXT;"))
-            await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;"))
+            async with engine.begin() as conn:
+                await conn.execute(text(stmt))
         except Exception as e:
-            log.debug(f"Schema column check skipped or not needed: {e}")
+            # Column already exists or syntax error for other DB dialect - completely normal
+            log.debug(f"Migration check notice for '{stmt}': {e}")
     log.info("Database schema initialized.")
 
     if settings.EMBEDDING_PROVIDER not in ("none", "disabled", "deepseek", "deepseek_search"):

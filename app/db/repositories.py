@@ -1,6 +1,9 @@
+import difflib
+import re
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from app.core.logger import log
 from sqlalchemy import (
     and_,
     delete,

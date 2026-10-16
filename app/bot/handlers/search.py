@@ -11,6 +11,7 @@ from app.bot.card_renderer import send_card_message, update_card_message
 from app.bot.keyboards import get_bookmark_card_keyboard, get_main_reply_keyboard
 from app.core.config import settings
 from app.core.logger import log
+from app.db.models import Bookmark, ContentType
 from app.db.repositories import BookmarkRepository
 from app.providers.registry import get_embedding_provider, get_vector_store
 from app.services.search import HybridSearchService

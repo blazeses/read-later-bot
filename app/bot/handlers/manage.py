@@ -16,7 +16,7 @@ from app.bot.keyboards import (
     get_tags_keyboard,
 )
 from app.core.logger import log
-from app.db.models import Bookmark
+from app.db.models import Bookmark, ContentType
 from app.db.repositories import BookmarkRepository, TagRepository
 
 router = Router()
