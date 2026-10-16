@@ -95,14 +95,14 @@ async def cmd_recent(message: Message, session: AsyncSession):
 
         total_pages = max(1, math.ceil(total / PAGE_SIZE))
         text = render_bookmarks_list(bookmarks, current_page=1, total_count=total, limit=PAGE_SIZE, is_unread_only=False)
-        kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="recent_list")
+        kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="rl")
         await message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
         log.exception(f"Error in cmd_recent: {e}")
         await message.answer(f"⚠️ Не удалось загрузить недавние закладки. Ошибка: {str(e)[:150]}")
 
 
-@router.callback_query(F.data.startswith("recent_list:"))
+@router.callback_query(F.data.startswith("rl:") | F.data.startswith("recent_list:"))
 async def cb_recent_list(callback: CallbackQuery, session: AsyncSession):
     page = int(callback.data.split(":")[1])
     offset = (page - 1) * PAGE_SIZE
@@ -115,7 +115,7 @@ async def cb_recent_list(callback: CallbackQuery, session: AsyncSession):
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
     text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_unread_only=False)
-    kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="recent_list")
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="rl")
 
     if callback.message.photo:
         try:
@@ -131,31 +131,35 @@ async def cb_recent_list(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("open_bm:"))
+@router.callback_query(F.data.startswith("op:") | F.data.startswith("open_bm:"))
 async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
-    # format: open_bm:{id}:{prefix}:{page}
-    parts = callback.data.split(":")
-    bm_id = uuid.UUID(parts[1])
-    nav_prefix = parts[2]
-    current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+    try:
+        # format: op:{id}:{prefix}:{page}
+        parts = callback.data.split(":")
+        bm_id = uuid.UUID(parts[1])
+        nav_prefix = parts[2] if len(parts) > 2 else "rl"
+        current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
 
-    repo = BookmarkRepository(session)
-    bookmark = await repo.get_by_id(bm_id, callback.from_user.id)
-    if not bookmark:
-        await callback.answer("Закладка не найдена.", show_alert=True)
-        return
+        repo = BookmarkRepository(session)
+        bookmark = await repo.get_by_id(bm_id, callback.from_user.id)
+        if not bookmark:
+            await callback.answer("Закладка не найдена.", show_alert=True)
+            return
 
-    kb = get_bookmark_card_keyboard(
-        bookmark.id,
-        url=bookmark.url,
-        is_read=bookmark.is_read,
-        nav_prefix=nav_prefix,
-        current_page=current_page,
-        total_pages=1,
-        photo_count=get_photo_count(bookmark),
-    )
-    await update_card_message(callback, bookmark, kb)
-    await callback.answer()
+        kb = get_bookmark_card_keyboard(
+            bookmark.id,
+            url=bookmark.url,
+            is_read=bookmark.is_read,
+            nav_prefix=nav_prefix,
+            current_page=current_page,
+            total_pages=1,
+            photo_count=get_photo_count(bookmark),
+        )
+        await update_card_message(callback, bookmark, kb)
+        await callback.answer()
+    except Exception as e:
+        log.exception(f"Error in cb_open_bookmark: {e}")
+        await callback.answer(f"Не удалось открыть статью: {str(e)[:100]}", show_alert=True)
 
 
 # --- Unread Articles with Direct Selection ---
@@ -172,11 +176,11 @@ async def cmd_unread(message: Message, session: AsyncSession):
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
     text = render_bookmarks_list(bookmarks, current_page=1, total_count=total, limit=PAGE_SIZE, is_unread_only=True)
-    kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="unread_list")
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="ul")
     await message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
 
-@router.callback_query(F.data.startswith("unread_list:"))
+@router.callback_query(F.data.startswith("ul:") | F.data.startswith("unread_list:"))
 async def cb_unread_list(callback: CallbackQuery, session: AsyncSession):
     page = int(callback.data.split(":")[1])
     offset = (page - 1) * PAGE_SIZE

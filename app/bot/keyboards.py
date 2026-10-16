@@ -109,14 +109,14 @@ def get_bookmark_card_keyboard(
     )
 
     # 5. Back to list or Next Random button
-    if nav_prefix in ("recent_list", "unread_list"):
+    if nav_prefix in ("rl", "recent_list", "ul", "unread_list"):
         builder.row(
             InlineKeyboardButton(
                 text="« 📋 Назад к списку",
                 callback_data=f"{nav_prefix}:{current_page}",
             )
         )
-    elif nav_prefix == "random":
+    elif nav_prefix in ("rnd", "random"):
         builder.row(
             InlineKeyboardButton(
                 text="🎲 Следующая случайная",
@@ -131,7 +131,7 @@ def get_bookmarks_list_keyboard(
     bookmarks: list,
     current_page: int,
     total_pages: int,
-    prefix: str = "recent_list",
+    prefix: str = "rl",
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for interactive bookmark selection list:
@@ -140,13 +140,13 @@ def get_bookmarks_list_keyboard(
     """
     builder = InlineKeyboardBuilder()
 
-    # 1. Number selection buttons
+    # 1. Number selection buttons (op:{b.id}:{prefix}:{page} -> max 45 bytes, strictly <= 64 bytes)
     num_buttons = []
     for idx, b in enumerate(bookmarks, start=1):
         num_buttons.append(
             InlineKeyboardButton(
                 text=f"[{idx}]",
-                callback_data=f"open_bm:{b.id}:{prefix}:{current_page}",
+                callback_data=f"op:{b.id}:{prefix}:{current_page}",
             )
         )
     if num_buttons:
@@ -178,14 +178,14 @@ def get_bookmarks_list_keyboard(
         builder.row(*nav_buttons)
 
     # 3. Quick mode switcher
-    if prefix == "recent_list":
+    if prefix in ("rl", "recent_list"):
         builder.row(
-            InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="unread_list:1"),
+            InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
-    elif prefix == "unread_list":
+    elif prefix in ("ul", "unread_list"):
         builder.row(
-            InlineKeyboardButton(text="🕒 Все недавние", callback_data="recent_list:1"),
+            InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
 

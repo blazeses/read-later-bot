@@ -196,13 +196,32 @@ async def update_card_message(
                 reply_markup=reply_markup,
                 parse_mode="HTML",
             )
-        except Exception:
-            await msg.answer_photo(
-                photo=photo_source,
-                caption=strip_html_tags(caption_html)[:1024],
-                reply_markup=reply_markup,
-                parse_mode=None,
-            )
+        except Exception as e_ph:
+            log.warning(f"answer_photo HTML failed: {e_ph}. Retrying plain.")
+            try:
+                await msg.answer_photo(
+                    photo=photo_source,
+                    caption=strip_html_tags(caption_html)[:1024],
+                    reply_markup=reply_markup,
+                    parse_mode=None,
+                )
+            except Exception as e_ph2:
+                log.warning(f"answer_photo plain failed: {e_ph2}. Falling back to text message.")
+                full_txt = build_card_text(bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=False)
+                try:
+                    await msg.answer(
+                        text=full_txt,
+                        reply_markup=reply_markup,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    await msg.answer(
+                        text=strip_html_tags(full_txt)[:4096],
+                        reply_markup=reply_markup,
+                        parse_mode=None,
+                        disable_web_page_preview=True,
+                    )
     else:
         full_text_html = build_card_text(
             bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=False
