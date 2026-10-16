@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Optional
 from app.core.config import settings
@@ -8,7 +9,7 @@ from app.extractors.base import BaseExtractor, ExtractedContent
 
 class DocumentExtractor(BaseExtractor):
     """
-    Extracts text from PDF, DOCX, TXT, and Markdown files.
+    Extracts text from PDF, DOCX, TXT, and Markdown files safely using asyncio threads.
     """
     async def extract(self, source: str, **kwargs) -> ExtractedContent:
         file_path = source
@@ -45,40 +46,8 @@ class DocumentExtractor(BaseExtractor):
                 error_message=f"Ошибка чтения файла: {e}",
             )
 
-        text = ""
-        author = None
-        title = filename
-
         try:
-            if ext == ".pdf":
-                text, pdf_title, pdf_author = self._extract_pdf(file_path)
-                if pdf_title:
-                    title = f"{pdf_title} ({filename})"
-                if pdf_author:
-                    author = pdf_author
-
-            elif ext == ".docx":
-                text, doc_author = self._extract_docx(file_path)
-                if doc_author:
-                    author = doc_author
-
-            elif ext in (".txt", ".md", ".markdown", ".rst"):
-                text = self._extract_text(file_path)
-
-            else:
-                return ExtractedContent(
-                    title=filename,
-                    author=None,
-                    date=None,
-                    text="",
-                    language=None,
-                    domain="file",
-                    content_type=ContentType.DOCUMENT,
-                    url=None,
-                    success=False,
-                    error_message=f"Неподдерживаемый формат файла: {ext}",
-                )
-
+            text, title, author = await asyncio.to_thread(self._extract_sync, file_path, ext, filename)
         except Exception as e:
             log.exception(f"Error parsing document {file_path}: {e}")
             return ExtractedContent(
@@ -111,6 +80,31 @@ class DocumentExtractor(BaseExtractor):
             error_message=None if has_text else "Не удалось извлечь печатный текст из файла (возможно, скан без OCR).",
         )
 
+    def _extract_sync(self, file_path: str, ext: str, filename: str) -> tuple[str, str, Optional[str]]:
+        text = ""
+        author = None
+        title = filename
+
+        if ext == ".pdf":
+            text, pdf_title, pdf_author = self._extract_pdf(file_path)
+            if pdf_title:
+                title = f"{pdf_title} ({filename})"
+            if pdf_author:
+                author = pdf_author
+
+        elif ext == ".docx":
+            text, doc_author = self._extract_docx(file_path)
+            if doc_author:
+                author = doc_author
+
+        elif ext in (".txt", ".md", ".markdown", ".rst"):
+            text = self._extract_text(file_path)
+
+        else:
+            raise ValueError(f"Неподдерживаемый формат файла: {ext}")
+
+        return text, title, author
+
     def _extract_pdf(self, file_path: str) -> tuple[str, Optional[str], Optional[str]]:
         text_parts = []
         title = None
@@ -122,8 +116,12 @@ class DocumentExtractor(BaseExtractor):
                 meta = doc.metadata or {}
                 title = meta.get("title") or None
                 author = meta.get("author") or None
-                for page in doc:
+                for idx, page in enumerate(doc):
+                    if idx >= 150:  # Max 150 pages
+                        break
                     text_parts.append(page.get_text())
+                    if sum(len(p) for p in text_parts) > settings.MAX_TEXT_LENGTH:
+                        break
             return "\n\n".join(text_parts).strip(), title, author
         except ImportError:
             pass
@@ -135,10 +133,14 @@ class DocumentExtractor(BaseExtractor):
             if reader.metadata:
                 title = reader.metadata.title
                 author = reader.metadata.author
-            for page in reader.pages:
+            for idx, page in enumerate(reader.pages):
+                if idx >= 150:
+                    break
                 extracted = page.extract_text()
                 if extracted:
                     text_parts.append(extracted)
+                if sum(len(p) for p in text_parts) > settings.MAX_TEXT_LENGTH:
+                    break
 
         return "\n\n".join(text_parts).strip(), title, author
 

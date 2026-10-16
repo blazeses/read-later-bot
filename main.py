@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from app.bot.handlers import base, bookmarks, manage, search
+from app.bot.handlers import base, bookmarks, inline, manage, search
 from app.bot.middlewares import DbSessionMiddleware, WhitelistMiddleware
 from app.core.config import settings
 from app.core.logger import log
@@ -72,6 +72,7 @@ async def main():
 
     # 5. Register Routers (Order matters: catch-all bookmarks router is last)
     dp.include_router(base.router)
+    dp.include_router(inline.router)
     dp.include_router(search.router)
     dp.include_router(manage.router)
     dp.include_router(bookmarks.router)
@@ -80,15 +81,15 @@ async def main():
     try:
         from aiogram.types import BotCommand
         await bot.set_my_commands([
-            BotCommand(command="menu", description="📱 Открыть меню кнопок"),
-            BotCommand(command="recent", description="🕒 Недавние материалы"),
-            BotCommand(command="search", description="🔍 Поиск по базе знаний"),
-            BotCommand(command="unread", description="📖 Непрочитанные статьи"),
-            BotCommand(command="tags", description="🏷 Поиск по тегам"),
+            BotCommand(command="menu", description="📱 Открыть главное меню"),
+            BotCommand(command="bookmarks", description="📥 Мои закладки"),
+            BotCommand(command="search", description="🔍 Поиск по смыслу"),
             BotCommand(command="random", description="🎲 Случайная статья"),
-            BotCommand(command="stats", description="📊 Статистика базы"),
+            BotCommand(command="tags", description="🏷 Поиск по тегам"),
+            BotCommand(command="digest", description="📊 Еженедельный дайджест"),
+            BotCommand(command="export", description="💾 Экспорт базы"),
+            BotCommand(command="stats", description="📈 Статистика базы"),
             BotCommand(command="help", description="❓ Справка по боту"),
-            BotCommand(command="hide", description="⌨️ Скрыть клавиатуру"),
         ])
     except Exception as cmd_err:
         log.warning(f"Failed to set bot commands: {cmd_err}")

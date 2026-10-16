@@ -4,7 +4,7 @@ import os
 import tempfile
 import uuid
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InputMediaPhoto, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.card_renderer import update_card_message
@@ -12,7 +12,7 @@ from app.bot.keyboards import get_bookmark_card_keyboard
 from app.core.config import settings
 from app.core.logger import log
 from app.db.models import ContentType
-from app.db.repositories import BookmarkRepository
+from app.db.repositories import BookmarkRepository, TagRepository
 from app.extractors.twitter import TWITTER_URL_REGEX
 from app.extractors.url_utils import extract_urls
 from app.extractors.youtube import YOUTUBE_REGEX
@@ -35,12 +35,15 @@ _media_groups: dict[str, list[Message]] = {}
 
 MENU_BUTTON_TEXTS = {
     "➕ Добавить статью", "Добавить статью",
+    "📥 Мои закладки", "Мои закладки",
     "🔍 Поиск", "Поиск",
     "🕒 Недавние", "Недавние", "недавние",
     "📖 Непрочитанные", "Непрочитанные", "непрочитанные",
     "🏷 Теги", "Теги", "теги",
     "🎲 Случайная", "Случайная", "случайная",
+    "📊 Дайджест", "Дайджест",
     "📊 Статистика", "Статистика", "статистика",
+    "⚙️ Настройки", "Настройки",
     "❓ Помощь", "Помощь", "помощь",
     "🔽 Скрыть меню", "Скрыть меню", "Закрыть меню",
 }
@@ -55,7 +58,7 @@ async def handle_text_or_urls(message: Message):
     text = message.text.strip()
     urls = extract_urls(text)
 
-    # 1. If URLs are present in message
+    # 1. Ссылки в сообщении
     if urls:
         user_comment = text
         for u in urls:
@@ -70,7 +73,7 @@ async def handle_text_or_urls(message: Message):
             else:
                 c_type = ContentType.ARTICLE
 
-            status_msg = await message.answer(f"⏳ <b>Сохраняю ссылку:</b> <i>{url}</i>...", parse_mode="HTML")
+            status_msg = await message.answer(f"⏳ <b>[1/3] Скачиваю ссылку:</b> <i>{url}</i>...", parse_mode="HTML")
 
             task = IngestTask(
                 user_id=message.from_user.id,
@@ -82,9 +85,9 @@ async def handle_text_or_urls(message: Message):
             )
             await ingest_service.enqueue(task)
 
-    # 2. Plain text without URLs -> save as Note/Quote
+    # 2. Обычный текст без ссылок -> заметка / мысль
     else:
-        status_msg = await message.answer("⏳ <b>Сохраняю заметку...</b>", parse_mode="HTML")
+        status_msg = await message.answer("⏳ <b>[1/3] Сохраняю заметку...</b>", parse_mode="HTML")
         task = IngestTask(
             user_id=message.from_user.id,
             chat_id=message.chat.id,
@@ -102,34 +105,27 @@ async def handle_photo_upload(message: Message):
         await message.answer("Сервис обработки недоступен.")
         return
 
-    # Check if this photo is part of an album (media group)
     if message.media_group_id:
         mg_id = message.media_group_id
         if mg_id in _media_groups:
-            # It's another photo from the same post/album arriving right behind the first one
             _media_groups[mg_id].append(message)
             return
 
-        # First photo of the media group: start collector
         _media_groups[mg_id] = [message]
-        # Wait 0.8s for Telegram to deliver all photos of the album
         await asyncio.sleep(0.8)
         messages = _media_groups.pop(mg_id, [message])
     else:
         messages = [message]
 
-    # Collect all photo file IDs
     photo_ids = [m.photo[-1].file_id for m in messages if m.photo]
     primary_photo_id = photo_ids[0] if photo_ids else None
 
-    # Find caption (Telegram attaches caption to only one photo in the album)
     caption = ""
     for m in messages:
         if m.caption and m.caption.strip():
             caption = m.caption.strip()
             break
 
-    # Determine author/source if forwarded
     author = None
     for m in messages:
         if m.forward_from_chat and m.forward_from_chat.title:
@@ -149,7 +145,7 @@ async def handle_photo_upload(message: Message):
         url = urls[0]
         user_comment = caption.replace(url, "").strip() or None
         status_msg = await messages[0].answer(
-            f"⏳ <b>Сохраняю статью{count_label}:</b> <i>{url}</i>...",
+            f"⏳ <b>[1/3] Сохраняю статью{count_label}:</b> <i>{url}</i>...",
             parse_mode="HTML",
         )
         task = IngestTask(
@@ -167,7 +163,7 @@ async def handle_photo_upload(message: Message):
     else:
         note_text = caption if caption else "Фото-заметка из Telegram"
         status_msg = await messages[0].answer(
-            f"⏳ <b>Сохраняю заметку{count_label}...</b>",
+            f"⏳ <b>[1/3] Сохраняю заметку{count_label}...</b>",
             parse_mode="HTML",
         )
         task = IngestTask(
@@ -205,7 +201,7 @@ async def handle_document_upload(message: Message):
         await message.answer(f"❌ Файл слишком большой ({file_size_mb:.1f} МБ). Лимит: {settings.MAX_FILE_SIZE_MB} МБ.")
         return
 
-    status_msg = await message.answer(f"⏳ <b>Загружаю и анализирую {filename}...</b>", parse_mode="HTML")
+    status_msg = await message.answer(f"⏳ <b>[1/3] Загружаю и анализирую {filename}...</b>", parse_mode="HTML")
 
     temp_dir = tempfile.gettempdir()
     local_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{filename}")
@@ -226,7 +222,109 @@ async def handle_document_upload(message: Message):
     await ingest_service.enqueue(task)
 
 
-# --- Callback Queries ---
+# --- Callback Queries: Retry and Error Handling ---
+
+@router.callback_query(F.data.startswith("retry_ingest:"))
+async def cb_retry_ingest(callback: CallbackQuery):
+    msg_id = int(callback.data.split(":")[1])
+    if not ingest_service:
+        await callback.answer("Сервис недоступен.")
+        return
+
+    task = ingest_service.failed_tasks.get(msg_id)
+    if not task:
+        await callback.answer("Данные задания устарели. Отправьте ссылку повторно.", show_alert=True)
+        return
+
+    await callback.message.edit_text("⏳ <b>[1/3] Повторная попытка обработки...</b>", parse_mode="HTML")
+    await ingest_service.enqueue(task)
+    await callback.answer("Повторный запуск")
+
+
+@router.callback_query(F.data.startswith("save_raw_note:"))
+async def cb_save_raw_note(callback: CallbackQuery):
+    msg_id = int(callback.data.split(":")[1])
+    if not ingest_service:
+        await callback.answer("Сервис недоступен.")
+        return
+
+    task = ingest_service.failed_tasks.get(msg_id)
+    if not task:
+        await callback.answer("Данные задания устарели.", show_alert=True)
+        return
+
+    task.content_type = ContentType.NOTE
+    task.source = f"Ссылка: {task.source}"
+    await callback.message.edit_text("⏳ <b>[1/3] Сохраняю материал как текстовую заметку...</b>", parse_mode="HTML")
+    await ingest_service.enqueue(task)
+    await callback.answer("Сохраняю как заметку")
+
+
+@router.callback_query(F.data.startswith("toggle_fav:"))
+async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
+    bm_id = uuid.UUID(callback.data.split(":")[1])
+    tag_repo = TagRepository(session)
+    bm_repo = BookmarkRepository(session)
+
+    bookmark = await bm_repo.get_by_id(bm_id, callback.from_user.id)
+    if not bookmark:
+        await callback.answer("Закладка не найдена.", show_alert=True)
+        return
+
+    tag_names = [t.name.lower() for t in bookmark.tags]
+    if "избранное" in tag_names:
+        new_tags = [t for t in bookmark.tags if t.name.lower() != "избранное"]
+        await bm_repo.update_metadata(bm_id, callback.from_user.id, tags=new_tags)
+        await session.commit()
+        await callback.answer("Удалено из избранного")
+    else:
+        fav_tags = await tag_repo.get_or_create_tags(callback.from_user.id, ["избранное"])
+        combined_tags = list({t.name: t for t in (bookmark.tags + fav_tags)}.values())
+        await bm_repo.update_metadata(bm_id, callback.from_user.id, tags=combined_tags)
+        await session.commit()
+        await callback.answer("⭐ Добавлено в избранное!", show_alert=False)
+
+
+@router.callback_query(F.data.startswith("remind_menu:"))
+async def cb_remind_menu(callback: CallbackQuery):
+    bm_id_str = callback.data.split(":")[1]
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌅 Завтра утром (09:00)", callback_data=f"set_remind:{bm_id_str}:tomorrow")],
+            [InlineKeyboardButton(text="🏖 В субботу (11:00)", callback_data=f"set_remind:{bm_id_str}:weekend")],
+            [InlineKeyboardButton(text="📅 Через 3 дня", callback_data=f"set_remind:{bm_id_str}:3days")],
+            [InlineKeyboardButton(text="« Отмена", callback_data="close_remind_menu")],
+        ]
+    )
+    await callback.message.answer("⏰ <b>Когда напомнить прочитать эту статью?</b>", reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("set_remind:"))
+async def cb_set_remind(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    period = parts[2]
+    labels = {
+        "tomorrow": "завтра в 09:00",
+        "weekend": "в субботу в 11:00",
+        "3days": "через 3 дня",
+    }
+    label = labels.get(period, "в выбранное время")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer(f"⏰ Напоминание установлено на {label}!", show_alert=True)
+
+
+@router.callback_query(F.data == "close_remind_menu")
+async def cb_close_remind_menu(callback: CallbackQuery):
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
+
 
 @router.callback_query(F.data.startswith("show_album:"))
 async def cb_show_album(callback: CallbackQuery, session: AsyncSession):
@@ -258,7 +356,6 @@ async def cb_show_album(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("toggle_read:"))
 async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
-    # format: toggle_read:{id}:{nav_prefix}:{current_page}:{total_pages}:{extra_data}
     parts = callback.data.split(":")
     bookmark_id = uuid.UUID(parts[1])
     nav_prefix = parts[2] if len(parts) > 2 and parts[2] != "_" else None
@@ -277,7 +374,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
     await session.commit()
     bookmark.is_read = new_status
 
-    photo_count = 1
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url) else 0
     if bookmark.photos_json:
         try:
             p_list = json.loads(bookmark.photos_json)
@@ -306,7 +403,6 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("toggle_view:"))
 async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
-    # format: toggle_view:{id}:{mode}:{nav_prefix}:{current_page}:{total_pages}:{extra_data}
     parts = callback.data.split(":")
     bookmark_id = uuid.UUID(parts[1])
     mode = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
@@ -322,7 +418,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Закладка не найдена.", show_alert=True)
         return
 
-    photo_count = 1
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url) else 0
     if bookmark.photos_json:
         try:
             p_list = json.loads(bookmark.photos_json)
@@ -347,37 +443,6 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("view_text:"))
-async def cb_view_text_legacy(callback: CallbackQuery, session: AsyncSession):
-    # Redirect legacy view_text calls to in-place full text toggle
-    parts = callback.data.split(":")
-    bookmark_id = uuid.UUID(parts[1])
-    repo = BookmarkRepository(session)
-    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
-    if not bookmark:
-        await callback.answer("Закладка не найдена.", show_alert=True)
-        return
-
-    photo_count = 1
-    if bookmark.photos_json:
-        try:
-            p_list = json.loads(bookmark.photos_json)
-            if isinstance(p_list, list):
-                photo_count = len(p_list)
-        except Exception:
-            pass
-
-    kb = get_bookmark_card_keyboard(
-        bookmark.id,
-        url=bookmark.url,
-        is_read=bookmark.is_read,
-        showing_full_text=True,
-        photo_count=photo_count,
-    )
-    await update_card_message(callback, bookmark, kb, showing_full_text=True)
-    await callback.answer()
-
-
 @router.callback_query(F.data.startswith("delete:"))
 async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
     bookmark_id_str = callback.data.split(":")[1]
@@ -395,7 +460,6 @@ async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
             except Exception as e:
                 log.warning(f"Error removing vectors from Qdrant: {e}")
 
-        # In-place clean delete message
         msg = callback.message
         if msg.photo:
             try:

@@ -10,28 +10,20 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
 def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Reply keyboard displayed at the bottom of the chat (collapsible)."""
+    """Bottom persistent Reply Keyboard designed with Zero Guesswork principles."""
     builder = ReplyKeyboardBuilder()
     builder.row(
-        KeyboardButton(text="➕ Добавить статью"),
+        KeyboardButton(text="📥 Мои закладки"),
         KeyboardButton(text="🔍 Поиск"),
     )
     builder.row(
-        KeyboardButton(text="🕒 Недавние"),
-        KeyboardButton(text="📖 Непрочитанные"),
+        KeyboardButton(text="📊 Дайджест"),
+        KeyboardButton(text="⚙️ Настройки"),
     )
     builder.row(
-        KeyboardButton(text="🏷 Теги"),
-        KeyboardButton(text="🎲 Случайная"),
-    )
-    builder.row(
-        KeyboardButton(text="📊 Статистика"),
         KeyboardButton(text="❓ Помощь"),
     )
-    builder.row(
-        KeyboardButton(text="🔽 Скрыть меню"),
-    )
-    return builder.as_markup(resize_keyboard=True, is_persistent=False)
+    return builder.as_markup(resize_keyboard=True, is_persistent=True)
 
 
 def get_bookmark_card_keyboard(
@@ -46,12 +38,14 @@ def get_bookmark_card_keyboard(
     photo_count: int = 1,
 ) -> InlineKeyboardMarkup:
     """
-    Inline keyboard for bookmark cards with integrated pagination,
-    in-place text/summary toggle, read status toggle, and delete button.
+    Inline keyboard for bookmark cards with action buttons:
+    [⭐ В избранное] [🏷 Изменить теги]
+    [💡 Саммари / 📄 Полный текст] [🗑 Удалить]
+    [⏰ Напомнить] [🌐 Открыть оригинал]
     """
     builder = InlineKeyboardBuilder()
 
-    # 1. Navigation Row directly in the card (if multiple pages)
+    # 1. Navigation Row (if browsing list of cards)
     if total_pages > 1 and nav_prefix:
         extra = f":{extra_data}" if extra_data else ""
         nav_buttons: List[InlineKeyboardButton] = []
@@ -77,42 +71,51 @@ def get_bookmark_card_keyboard(
             )
         builder.row(*nav_buttons)
 
-    # 2. Link to original source & album photos button
-    action_row = []
-    if url and url.startswith("http"):
-        action_row.append(InlineKeyboardButton(text="🌐 Открыть оригинал", url=url))
-    if photo_count > 1:
-        action_row.append(InlineKeyboardButton(text=f"🖼 Все фото ({photo_count})", callback_data=f"show_album:{bookmark_id}"))
-    if action_row:
-        builder.row(*action_row)
-
-    # 3. Read status and Tag editing
-    status_text = "📖 В непрочитанные" if is_read else "✅ Прочитано"
+    # 2. Main actions: Favorite & Tag editing
     np_safe = nav_prefix if nav_prefix else "_"
     ex_safe = extra_data if extra_data else "_"
-    status_cb = f"toggle_read:{bookmark_id}:{np_safe}:{current_page}:{total_pages}:{ex_safe}"
+    fav_cb = f"toggle_fav:{bookmark_id}"
     tags_cb = f"edit_tags:{bookmark_id}"
 
     builder.row(
-        InlineKeyboardButton(text=status_text, callback_data=status_cb),
-        InlineKeyboardButton(text="🏷 Изменить теги", callback_data=tags_cb),
+        InlineKeyboardButton(text="⭐ В избранное", callback_data=fav_cb),
+        InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
     )
 
-    # 4. In-place full text / summary toggle & Delete
+    # 3. Read status and In-place text toggle
+    status_text = "📖 В непрочитанные" if is_read else "✅ Прочитано"
+    status_cb = f"toggle_read:{bookmark_id}:{np_safe}:{current_page}:{total_pages}:{ex_safe}"
+
     view_text_mode = 0 if showing_full_text else 1
     view_label = "💡 Саммари" if showing_full_text else "📄 Полный текст"
     toggle_view_cb = f"toggle_view:{bookmark_id}:{view_text_mode}:{np_safe}:{current_page}:{total_pages}:{ex_safe}"
 
     builder.row(
+        InlineKeyboardButton(text=status_text, callback_data=status_cb),
         InlineKeyboardButton(text=view_label, callback_data=toggle_view_cb),
+    )
+
+    # 4. Remind & Delete
+    remind_cb = f"remind_menu:{bookmark_id}"
+    builder.row(
+        InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{bookmark_id}"),
     )
 
-    # 5. Back to list or Next Random button
+    # 5. External URL and album photos
+    ext_row = []
+    if url and url.startswith("http"):
+        ext_row.append(InlineKeyboardButton(text="🌐 Оригинал", url=url))
+    if photo_count > 1:
+        ext_row.append(InlineKeyboardButton(text=f"🖼 Все фото ({photo_count})", callback_data=f"show_album:{bookmark_id}"))
+    if ext_row:
+        builder.row(*ext_row)
+
+    # 6. Back to list or Next Random button
     if nav_prefix in ("rl", "recent_list", "ul", "unread_list"):
         builder.row(
             InlineKeyboardButton(
-                text="« 📋 Назад к списку",
+                text="« 📋 К списку",
                 callback_data=f"{nav_prefix}:{current_page}",
             )
         )
@@ -135,12 +138,10 @@ def get_bookmarks_list_keyboard(
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for interactive bookmark selection list:
-    Row of numbers [1] [2] [3]... to open each article card directly,
-    plus pagination and quick filters.
+    [1] [2] [3]... to open article card directly.
     """
     builder = InlineKeyboardBuilder()
 
-    # 1. Number selection buttons (op:{b.id}:{prefix}:{page} -> max 45 bytes, strictly <= 64 bytes)
     num_buttons = []
     for idx, b in enumerate(bookmarks, start=1):
         num_buttons.append(
@@ -152,7 +153,6 @@ def get_bookmarks_list_keyboard(
     if num_buttons:
         builder.row(*num_buttons)
 
-    # 2. Pagination row
     if total_pages > 1:
         nav_buttons = []
         if current_page > 1:
@@ -177,7 +177,6 @@ def get_bookmarks_list_keyboard(
             )
         builder.row(*nav_buttons)
 
-    # 3. Quick mode switcher
     if prefix in ("rl", "recent_list"):
         builder.row(
             InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1"),
@@ -189,43 +188,6 @@ def get_bookmarks_list_keyboard(
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
 
-    return builder.as_markup()
-
-
-def get_pagination_keyboard(
-    prefix: str,
-    current_page: int,
-    total_pages: int,
-    extra_data: str = "",
-) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    buttons: List[InlineKeyboardButton] = []
-    extra = f":{extra_data}" if extra_data else ""
-
-    if current_page > 1:
-        buttons.append(
-            InlineKeyboardButton(
-                text="« Назад",
-                callback_data=f"{prefix}:{current_page - 1}{extra}",
-            )
-        )
-
-    buttons.append(
-        InlineKeyboardButton(
-            text=f"{current_page} / {max(1, total_pages)}",
-            callback_data="noop",
-        )
-    )
-
-    if current_page < total_pages:
-        buttons.append(
-            InlineKeyboardButton(
-                text="Вперед »",
-                callback_data=f"{prefix}:{current_page + 1}{extra}",
-            )
-        )
-
-    builder.row(*buttons)
     return builder.as_markup()
 
 

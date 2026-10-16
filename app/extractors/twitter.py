@@ -26,18 +26,17 @@ class TwitterExtractor(BaseExtractor):
         url = source
         match = TWITTER_URL_REGEX.search(url)
         if not match:
-            # Generic fallback
             return ExtractedContent(
                 title="Пост в X (Twitter)",
                 author=None,
                 date=None,
-                text="",
+                text=f"Ссылка: {url}",
                 language=None,
                 domain=extract_domain(url),
                 content_type=ContentType.TWEET,
                 url=url,
-                success=False,
-                error_message="Неверный формат ссылки на пост в X (Twitter)",
+                success=True,
+                error_message=None,
             )
 
         username = match.group(1)
@@ -57,6 +56,8 @@ class TwitterExtractor(BaseExtractor):
                     user_name = data.get("user_name", username)
                     user_screen_name = data.get("user_screen_name", username)
                     date = data.get("date", None)
+                    media_urls = data.get("mediaURLs", [])
+                    image_url = media_urls[0] if media_urls and isinstance(media_urls, list) else None
 
                     full_author = f"{user_name} (@{user_screen_name})"
                     title = f"Пост от {full_author}"
@@ -65,12 +66,13 @@ class TwitterExtractor(BaseExtractor):
                         title=title,
                         author=full_author,
                         date=date,
-                        text=tweet_text,
+                        text=tweet_text or f"Пост от {full_author}\n{url}",
                         language=None,
                         domain="x.com",
                         content_type=ContentType.TWEET,
                         url=url,
-                        success=bool(tweet_text.strip()),
+                        success=True,
+                        image_url=image_url,
                     )
         except Exception as e:
             log.warning(f"VxTwitter API failed for {url}: {e}")
@@ -93,26 +95,26 @@ class TwitterExtractor(BaseExtractor):
                         title=f"Пост от {author_name} (@{username})",
                         author=f"{author_name} (@{username})",
                         date=None,
-                        text=clean_text,
+                        text=clean_text or f"Пост от @{username}\n{url}",
                         language=None,
                         domain="x.com",
                         content_type=ContentType.TWEET,
                         url=url,
-                        success=bool(clean_text),
+                        success=True,
                     )
         except Exception as e:
             log.warning(f"Twitter oEmbed failed for {url}: {e}")
 
-        # Graceful degradation: save bookmark without full text
+        # 3. Graceful degradation: save raw post without failing
         return ExtractedContent(
-            title=f"Пост от @{username} в X",
+            title=f"Пост в X (@{username})",
             author=f"@{username}",
             date=None,
-            text="",
+            text=f"Ссылка на пост в X (Twitter): {url}\n\n(Текст не удалось извлечь автоматически из-за ограничений API X.com)",
             language=None,
             domain="x.com",
             content_type=ContentType.TWEET,
             url=url,
-            success=False,
-            error_message="Не удалось автоматически получить текст поста из X (API закрыт).",
+            success=True,
+            error_message=None,
         )

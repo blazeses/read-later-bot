@@ -79,7 +79,8 @@ def render_bookmarks_list(
 # --- Recent Articles with Direct Selection ---
 
 @router.message(Command("recent"))
-@router.message(F.text.in_({"🕒 Недавние", "Недавние", "недавние"}))
+@router.message(Command("bookmarks"))
+@router.message(F.text.in_({"📥 Мои закладки", "Мои закладки", "🕒 Недавние", "Недавние", "недавние"}))
 async def cmd_recent(message: Message, session: AsyncSession):
     try:
         repo = BookmarkRepository(session)

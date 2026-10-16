@@ -1,5 +1,5 @@
-import socket
 import ipaddress
+import socket
 import urllib.parse
 from typing import Optional, Set
 import httpx
@@ -7,7 +7,7 @@ from app.core.logger import log
 
 
 class SSRFSecurityError(Exception):
-    """Raised when an outbound URL resolves to a forbidden, private, or loopback IP."""
+    """Вызывается при попытке обращения к локальным, приватным или запрещенным адресам."""
     pass
 
 
@@ -36,6 +36,8 @@ FORBIDDEN_NETWORKS = [
     ipaddress.ip_network("ff00::/8"),
 ]
 
+ALLOWED_WEB_PORTS: Set[int] = {80, 443, 8080, 8443}
+
 
 def is_ip_allowed(ip_str: str) -> bool:
     try:
@@ -53,36 +55,40 @@ def is_ip_allowed(ip_str: str) -> bool:
 def validate_url_safe(url: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise SSRFSecurityError(f"Unsupported URL scheme: {parsed.scheme}")
+        raise SSRFSecurityError(f"Неподдерживаемый протокол: {parsed.scheme}")
 
     hostname = parsed.hostname
     if not hostname:
-        raise SSRFSecurityError("URL missing hostname")
+        raise SSRFSecurityError("В URL отсутствует имя хоста")
 
-    # If hostname is an IP literal
+    # Валидация порта: запрещаем подключение к внутренним сервисам (22, 5432, 6379, 2375 и др.)
+    port = parsed.port
+    if port is not None and port not in ALLOWED_WEB_PORTS:
+        raise SSRFSecurityError(f"Порт {port} заблокирован политикой безопасности.")
+
+    # Проверка литерала IP
     try:
         if not is_ip_allowed(hostname):
-            raise SSRFSecurityError(f"Access to private IP address is forbidden: {hostname}")
+            raise SSRFSecurityError(f"Доступ к приватному IP-адресу запрещен: {hostname}")
         return
     except ValueError:
         pass
 
-    # Resolve hostname to IPs
+    # Резолвинг доменного имени
     try:
         addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror as e:
-        raise SSRFSecurityError(f"Failed to resolve hostname '{hostname}': {e}")
+        raise SSRFSecurityError(f"Не удалось разрешить имя хоста '{hostname}': {e}")
 
-    for family, _, _, _, sockaddr in addr_info:
+    for _, _, _, _, sockaddr in addr_info:
         ip_addr = sockaddr[0]
         if not is_ip_allowed(ip_addr):
-            raise SSRFSecurityError(f"Hostname '{hostname}' resolved to forbidden IP '{ip_addr}'")
+            raise SSRFSecurityError(f"Хост '{hostname}' разрешается в запрещенный IP '{ip_addr}'")
 
 
 class SSRFSafeTransport(httpx.AsyncHTTPTransport):
     """
-    HTTP transport that checks target IP before opening socket connection,
-    preventing DNS rebinding and SSRF attacks.
+    Транспорт, гарантирующий проверку URL перед каждым запросом и редиректом.
     """
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         validate_url_safe(str(request.url))

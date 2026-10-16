@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import Optional
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -18,6 +19,54 @@ YOUTUBE_REGEX = re.compile(
 def extract_video_id(url: str) -> Optional[str]:
     match = YOUTUBE_REGEX.search(url)
     return match.group(1) if match else None
+
+
+def _fetch_subtitles_sync(video_id: str) -> tuple[str, Optional[str]]:
+    """
+    Синхронная функция для вызова в отдельном потоке:
+    Ищет сначала ручные, затем автогенерированные субтитры, с переводом на русский.
+    """
+    languages_priority = ["ru", "en", "uk", "be", "de", "fr", "es"]
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # 1. Попытка найти ручные субтитры
+        transcript = None
+        try:
+            transcript = transcript_list.find_manually_created_transcript(languages_priority)
+        except Exception:
+            pass
+
+        # 2. Попытка найти автогенерированные субтитры
+        if not transcript:
+            try:
+                transcript = transcript_list.find_generated_transcript(languages_priority)
+            except Exception:
+                pass
+
+        # 3. Если есть субтитры на любом другом языке — берем их и переводим на русский
+        if not transcript:
+            for t in transcript_list:
+                try:
+                    transcript = t.translate("ru")
+                    break
+                except Exception:
+                    transcript = t
+                    break
+
+        if transcript:
+            data = transcript.fetch()
+            lines = [item["text"] for item in data if item.get("text")]
+            clean_text = " ".join(lines)
+            clean_text = re.sub(r"\s+", " ", clean_text).strip()
+            return clean_text, transcript.language_code
+
+    except (NoTranscriptFound, TranscriptsDisabled):
+        log.info(f"Субтитры отключены или отсутствуют для видео {video_id}")
+    except Exception as e:
+        log.warning(f"Ошибка получения субтитров YouTube для {video_id}: {e}")
+
+    return "", None
 
 
 class YouTubeExtractor(BaseExtractor):
@@ -43,8 +92,9 @@ class YouTubeExtractor(BaseExtractor):
 
         title = f"YouTube Video ({video_id})"
         author = None
+        thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
-        # 1. Fetch metadata via oEmbed
+        # 1. Извлечение метаданных через oEmbed
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         try:
             async with create_safe_async_client(
@@ -56,31 +106,19 @@ class YouTubeExtractor(BaseExtractor):
                     data = resp.json()
                     title = data.get("title", title)
                     author = data.get("author_name", None)
+                    if data.get("thumbnail_url"):
+                        thumbnail_url = data.get("thumbnail_url")
         except Exception as e:
             log.warning(f"YouTube oEmbed metadata fetch failed for {video_id}: {e}")
 
-        # 2. Fetch subtitles/transcript
-        transcript_text = ""
-        try:
-            # Prefer Russian, then English
-            transcript_list = YouTubeTranscriptApi.get_transcript(
-                video_id,
-                languages=["ru", "en", "uk", "be", "de", "fr", "es"],
-            )
-            sub_lines = [item["text"] for item in transcript_list if item.get("text")]
-            transcript_text = " ".join(sub_lines)
-            transcript_text = re.sub(r"\s+", " ", transcript_text).strip()
-        except (NoTranscriptFound, TranscriptsDisabled):
-            log.info(f"No transcripts found for YouTube video {video_id}")
-        except Exception as e:
-            log.warning(f"YouTubeTranscriptApi error for {video_id}: {e}")
+        # 2. Неблокирующее получение субтитров в пуле потоков
+        transcript_text, lang = await asyncio.to_thread(_fetch_subtitles_sync, video_id)
 
-        # Prepare full text
-        full_text = ""
+        # 3. Формирование итогового текста
         if transcript_text:
             full_text = f"Субтитры видео:\n\n{transcript_text}"
         else:
-            full_text = f"Видео: {title}\nАвтор канала: {author or 'YouTube'}\n(Субтитры недоступны)"
+            full_text = f"Видео: {title}\nАвтор канала: {author or 'YouTube'}\n(Субтитры недоступны для данного видео)"
 
         if len(full_text) > settings.MAX_TEXT_LENGTH:
             full_text = full_text[:settings.MAX_TEXT_LENGTH] + "\n\n... [субтитры обрезаны]"
@@ -90,10 +128,11 @@ class YouTubeExtractor(BaseExtractor):
             author=author,
             date=None,
             text=full_text,
-            language=None,
+            language=lang,
             domain="youtube.com",
             content_type=ContentType.YOUTUBE,
             url=url,
             success=True,
-            error_message=None if transcript_text else "Субтитры недоступны, сохранено название и метаданные видео.",
+            error_message=None if transcript_text else "Субтитры отсутствуют, сохранены название и обложка видео.",
+            image_url=thumbnail_url,
         )

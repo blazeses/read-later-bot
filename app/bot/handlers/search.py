@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.card_renderer import send_card_message, update_card_message
@@ -38,7 +38,7 @@ def get_photo_count(b) -> int:
                 return len(photos)
         except Exception:
             pass
-    return 1 if b.telegram_photo_id else 0
+    return 1 if (b.telegram_photo_id or b.image_url) else 0
 
 
 async def execute_search(message: Message, query: str, session: AsyncSession):
@@ -47,7 +47,6 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
         await message.answer("Поисковый запрос не может быть пустым.")
         return
 
-    # Check if user has any bookmarks at all
     repo = BookmarkRepository(session)
     user_bookmarks, total_bm = await repo.list_bookmarks(user_id=message.from_user.id, limit=1)
     if total_bm == 0:
@@ -59,7 +58,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
         )
         return
 
-    status_msg = await message.answer(f"🔎 <i>Ищу «{html.escape(clean_q)}»...</i>", parse_mode="HTML")
+    status_msg = await message.answer(f"🔎 <i>Ищу «{html.escape(clean_q)}» по смыслу и ключевым словам...</i>", parse_mode="HTML")
 
     search_service = get_search_service()
     results, total_count = await search_service.search(
@@ -71,12 +70,21 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
     )
 
     if not results:
+        # Zero-Dead-End empty state with helpful navigation
+        kb_empty = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🕒 Показать 5 недавних", callback_data="rl:1")],
+                [InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1")],
+                [InlineKeyboardButton(text="🏷 Популярные теги", callback_data="open_tags_menu")],
+            ]
+        )
         await status_msg.edit_text(
             f"🔍 По запросу <i>«{html.escape(clean_q)}»</i> ничего не найдено.\n\n"
-            "💡 <b>Советы:</b>\n"
-            "• Попробуйте ввести одно ключевое слово (например «питон», «docker», «новости»)\n"
-            "• Или опишите суть статьи своими словами (DeepSeek поймет смысл)\n"
-            "• Посмотрите список всех ваших материалов через «🕒 Недавние»",
+            "💡 <b>Советы для поиска:</b>\n"
+            "• Напишите только ключевое слово (например: <code>python</code>, <code>docker</code>, <code>маркетинг</code>)\n"
+            "• Опишите суть статьи своими словами — DeepSeek поймет контекст\n"
+            "• Или выберите материалы из разделов ниже:",
+            reply_markup=kb_empty,
             parse_mode="HTML",
         )
         return
@@ -102,6 +110,13 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
     await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
 
 
+@router.callback_query(F.data == "open_tags_menu")
+async def cb_open_tags_menu(callback: CallbackQuery, session: AsyncSession):
+    from app.bot.handlers.manage import cmd_tags
+    await callback.answer()
+    await cmd_tags(callback.message, session)
+
+
 @router.message(Command("cancel"))
 async def cmd_cancel_search(message: Message, state: FSMContext):
     await state.clear()
@@ -112,12 +127,13 @@ async def cmd_cancel_search(message: Message, state: FSMContext):
 async def btn_search(message: Message, state: FSMContext):
     await state.set_state(SearchState.waiting_for_query)
     text = (
-        "🔍 <b>Поиск по сохраненным материалам:</b>\n\n"
-        "Отправьте мне поисковый запрос (тему, ключевое слово, сайт или тег):\n"
-        "• <i>микросервисы и docker</i>\n"
-        "• <i>искусственный интеллект</i>\n"
-        "• <i>#python</i>\n\n"
-        "<i>Для отмены отправьте /cancel</i>"
+        "🔍 <b>Умный поиск по вашей базе знаний:</b>\n\n"
+        "Напишите тему, ключевые слова, автора, сайт или тег:\n"
+        "• <i>«статьи про маркетинг и продажи»</i>\n"
+        "• <i>«архитектура микросервисов и docker»</i>\n"
+        "• <i>«#python асинхронность»</i>\n"
+        "• <i>«видео про космос с youtube»</i>\n\n"
+        "<i>Отправьте /cancel для отмены поиска</i>"
     )
     await message.answer(text, parse_mode="HTML")
 
@@ -132,7 +148,7 @@ async def cmd_search(message: Message, state: FSMContext, session: AsyncSession)
         await state.set_state(SearchState.waiting_for_query)
         await message.answer(
             "🔍 <b>Введите поисковый запрос:</b>\n"
-            "Напишите тему, название, автора или тег (или /cancel для отмены):",
+            "Напишите тему, автора, ключевые слова или тег (или /cancel для отмены):",
             parse_mode="HTML",
         )
 
@@ -142,12 +158,15 @@ async def process_search_query_state(message: Message, state: FSMContext, sessio
     text = (message.text or "").strip()
     if text.startswith("/") or text in {
         "➕ Добавить статью", "Добавить статью",
+        "📥 Мои закладки", "Мои закладки",
         "🔍 Поиск", "Поиск",
         "🕒 Недавние", "Недавние", "недавние",
         "📖 Непрочитанные", "Непрочитанные",
         "🏷 Теги", "Теги",
         "🎲 Случайная", "Случайная",
+        "📊 Дайджест", "Дайджест",
         "📊 Статистика", "Статистика",
+        "⚙️ Настройки", "Настройки",
         "❓ Помощь", "Помощь",
         "🔽 Скрыть меню", "Скрыть меню",
     }:
@@ -160,7 +179,6 @@ async def process_search_query_state(message: Message, state: FSMContext, sessio
 
 @router.callback_query(F.data.startswith("search_page:"))
 async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
-    # format: search_page:{page}:{query}
     parts = callback.data.split(":", 2)
     page = int(parts[1]) if parts[1].isdigit() else 1
     query = parts[2] if len(parts) > 2 else ""

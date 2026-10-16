@@ -1,8 +1,17 @@
+import csv
 import io
 import json
+import zipfile
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, Message, ReplyKeyboardRemove
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardRemove,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards import get_main_reply_keyboard
@@ -18,105 +27,187 @@ async def cmd_start(message: Message, session: AsyncSession):
     await user_repo.get_or_create(user_id)
 
     text = (
-        "👋 <b>Добро пожаловать в персональный менеджер закладок «Прочитать позже»!</b>\n\n"
-        "Отправляйте мне:\n"
-        "🔗 <b>Ссылки на статьи</b> — сохраню чистый текст, сделаю саммари и теги.\n"
-        "📷 <b>Фото и посты из каналов</b> — сохраню картинку с описанием (альбомы объединяются в одну заметку).\n"
-        "🐦 <b>Посты из X (Twitter)</b> — вытяну текст твита и автора.\n"
-        "▶️ <b>YouTube-ссылки</b> — сохраню описание и субтитры.\n"
-        "📄 <b>Файлы (PDF, DOCX, TXT, MD)</b> — извлеку текст для поиска.\n"
-        "💬 <b>Текстовые заметки / цитаты</b> — сохраню в базу знаний.\n\n"
-        "🤖 <b>Все анализируется DeepSeek</b> — мгновенно, без ограничений по квоте.\n\n"
-        "Пользуйтесь кнопками внизу экрана или введите /help для справки.\n"
-        "<i>Клавиатуру можно скрыть кнопкой «🔽 Скрыть меню» и вернуть командой /menu.</i>"
+        "👋 <b>Добро пожаловать в «ReadLater»!</b>\n\n"
+        "Я твой персональный менеджер знаний. Я сохраняю любые материалы, очищаю их от рекламы и формирую лаконичную AI-выжимку.\n\n"
+        "<b>Как пользоваться — всего 3 шага:</b>\n"
+        "1️⃣ <b>Отправь мне любую ссылку или файл</b> (статья, YouTube, Twitter/X, PDF, текст).\n"
+        "2️⃣ <b>DeepSeek сделает саммари</b> за 5 секунд и подберет точные теги.\n"
+        "3️⃣ <b>Ищи нужное через /search</b> или кнопки быстрого меню внизу.\n\n"
+        "👇 <i>Нажми кнопку ниже, чтобы увидеть пример готовой карточки:</i>"
     )
-    await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+
+    demo_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✨ Попробовать на примере", callback_data="show_demo_bookmark")],
+            [InlineKeyboardButton(text="📚 Подробнее о возможностях", callback_data="show_onboarding_help")],
+        ]
+    )
+    await message.answer(text, reply_markup=demo_kb, parse_mode="HTML")
+    await message.answer("👇 Главное меню доступно на кнопках внизу экрана:", reply_markup=get_main_reply_keyboard())
+
+
+@router.callback_query(F.data == "show_demo_bookmark")
+async def cb_show_demo_bookmark(callback: CallbackQuery):
+    demo_text = (
+        "🌐 <b>Статья</b> | ⏱ ~4 мин | 👤 Martin Fowler | 🌐 martinfowler.com\n"
+        "📌 <b>Архитектура современных AI-агентов и паттерн Memory Bank</b>\n\n"
+        "Статус: 📖 Не прочитано | #ai #архитектура #deepseek\n\n"
+        "💡 <b>Краткая суть:</b>\n"
+        "• Традиционные LLM ограничены размером контекста, поэтому память агента выносится во внешний векторный индекс.\n"
+        "• Паттерн Memory Bank разделяет кратковременную оперативную память диалога и долговременную базу знаний.\n"
+        "• Для точного поиска используется гибридная модель: полнотекстовый поиск BM25 + семантический эмбеддинг через RRF."
+    )
+    demo_card_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⭐ В избранное", callback_data="demo_fav"),
+                InlineKeyboardButton(text="🏷 Сменить тег", callback_data="demo_tag"),
+            ],
+            [
+                InlineKeyboardButton(text="📄 Полный текст", callback_data="demo_fulltext"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data="demo_del"),
+            ],
+            [
+                InlineKeyboardButton(text="⏰ Напомнить завтра", callback_data="demo_remind"),
+                InlineKeyboardButton(text="🌐 Оригинал", url="https://martinfowler.com"),
+            ],
+        ]
+    )
+    await callback.message.answer(demo_text, reply_markup=demo_card_kb, parse_mode="HTML")
+    await callback.answer("Пример карточки сгенерирован!")
+
+
+@router.callback_query(F.data == "show_onboarding_help")
+async def cb_show_onboarding_help(callback: CallbackQuery):
+    help_text = (
+        "📚 <b>Возможности бота «ReadLater»:</b>\n\n"
+        "• <b>Любые статьи и блоги</b> — вырезает баннеры, оставляет только чистый текст.\n"
+        "• <b>Видео YouTube</b> — скачивает субтитры и делает выжимку содержания.\n"
+        "• <b>Посты X (Twitter)</b> — сохраняет текст твита и прикрепленные фото.\n"
+        "• <b>Документы (PDF, DOCX)</b> — индексирует текст для быстрого поиска.\n"
+        "• <b>Инлайн-режим</b> — пишите <code>@bot_name запрос</code> прямо в любом чате, чтобы поделиться закладкой!\n"
+        "• <b>Экспорт</b> — выгружайте базу в Obsidian Markdown, CSV или JSON через команду /export."
+    )
+    await callback.message.answer(help_text, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("demo_"))
+async def cb_demo_interactions(callback: CallbackQuery):
+    actions = {
+        "demo_fav": "⭐ Материал добавлен в избранное!",
+        "demo_tag": "🏷 В реальной карточке здесь открывается редактирование тегов.",
+        "demo_fulltext": "📄 Здесь отображается полный извлеченный текст статьи.",
+        "demo_del": "🗑 Демо-карточка удалена.",
+        "demo_remind": "⏰ Напоминание установлено на завтра (09:00)!",
+    }
+    action_text = actions.get(callback.data, "Действие выполнено.")
+    if callback.data == "demo_del":
+        await callback.message.delete()
+    else:
+        await callback.answer(action_text, show_alert=True)
 
 
 @router.message(Command("menu"))
 async def cmd_menu(message: Message):
     text = (
         "📋 <b>Главное меню:</b>\n"
-        "Выберите действие ниже. Вы можете свернуть клавиатуру иконкой в Telegram или кнопкой «🔽 Скрыть меню»."
+        "Выберите действие ниже на кнопках клавиатуры."
     )
     await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
 @router.message(Command("hide"))
-@router.message(Command("close"))
 @router.message(F.text.in_({"🔽 Скрыть меню", "Скрыть меню", "Закрыть меню"}))
 async def cmd_hide_keyboard(message: Message):
     text = (
         "⌨️ <b>Меню скрыто.</b>\n\n"
         "• Чтобы вернуть кнопки меню, отправьте команду /menu\n"
-        "• Все функции также доступны через кнопку <b>[/]</b> слева в поле ввода."
+        "• Все функции также доступны через кнопку <b>[/]</b> меню бота."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove(), parse_mode="HTML")
 
 
-@router.message(F.text.in_({"➕ Добавить статью", "Добавить статью"}))
-async def btn_add_article(message: Message):
-    text = (
-        "📥 <b>Как сохранить материал в базу знаний:</b>\n\n"
-        "1. <b>Ссылка</b>: отправьте любую ссылку (статья, Хабр, VC.ru, YouTube, Twitter/X).\n"
-        "2. <b>Фото или пост</b>: перешлите пост из канала или отправьте фото с описанием/ссылкой.\n"
-        "3. <b>Файл</b>: отправьте PDF, DOCX, TXT или Markdown документ.\n"
-        "4. <b>Заметка</b>: просто отправьте любой текст или цитату.\n\n"
-        "🤖 <i>DeepSeek автоматически извлечет текст, сделает краткое саммари и подберет теги!</i>"
-    )
-    await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+@router.message(F.text.in_({"📥 Мои закладки", "Мои закладки"}))
+@router.message(Command("bookmarks"))
+async def btn_my_bookmarks(message: Message, session: AsyncSession):
+    from app.bot.handlers.manage import cmd_recent
+    await cmd_recent(message, session)
 
+
+@router.message(F.text.in_({"⚙️ Настройки", "Настройки"}))
+@router.message(Command("settings"))
+async def btn_settings(message: Message, session: AsyncSession):
+    user_repo = UserRepository(session)
+    user = await user_repo.get_or_create(message.from_user.id)
+    d_status = "включен ✅" if user.digest_enabled else "выключен ⏸"
+
+    text = (
+        "⚙️ <b>Настройки вашего профиля:</b>\n\n"
+        f"• Еженедельный дайджест: <b>{d_status}</b>\n"
+        "• Инлайн-режим: <b>активен</b> (вводите @имя_бота в любом диалоге)\n\n"
+        "Вы можете переключить статус дайджеста кнопкой ниже или выгрузить данные:"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="☕️ Переключить дайджест", callback_data="toggle_digest_btn")],
+            [InlineKeyboardButton(text="💾 Экспорт всей базы", callback_data="show_export_menu")],
+        ]
+    )
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "toggle_digest_btn")
+async def cb_toggle_digest_btn(callback: CallbackQuery, session: AsyncSession):
+    user_repo = UserRepository(session)
+    new_state = await user_repo.toggle_digest(callback.from_user.id)
+    await session.commit()
+    d_status = "включен ✅" if new_state else "выключен ⏸"
+    await callback.answer(f"Дайджест теперь {d_status}!")
+    try:
+        await callback.message.edit_text(
+            f"⚙️ <b>Настройки обновлены:</b>\n\n• Еженедельный дайджест: <b>{d_status}</b>",
+            reply_markup=callback.message.reply_markup,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "show_export_menu")
+async def cb_show_export_menu(callback: CallbackQuery):
+    await callback.answer()
+    await cmd_export_menu(callback.message)
+
+
+@router.message(F.text.in_({"📊 Дайджест", "Дайджест"}))
+@router.message(Command("digest"))
+async def cmd_toggle_digest(message: Message, session: AsyncSession):
+    user_repo = UserRepository(session)
+    new_state = await user_repo.toggle_digest(message.from_user.id)
+    await session.commit()
+    status_str = "включен ✅ (рассылка каждый понедельник)" if new_state else "выключен ⏸"
+    await message.answer(f"☕️ Еженедельный дайджест <b>{status_str}</b>.", reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
 @router.message(F.text.in_({"❓ Помощь", "Помощь"}))
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     text = (
-        "📚 <b>Справка по боту:</b>\n\n"
-        "📱 <code>/menu</code> — показать кнопки главного меню\n"
-        "⌨️ <code>/hide</code> — скрыть кнопки меню\n"
-        "🔍 <code>/search &lt;запрос&gt;</code> — поиск по смыслу и ключевым словам\n"
-        "🕒 <code>/recent</code> — просмотр последних сохраненных материалов\n"
-        "📖 <code>/unread</code> — список непрочитанных статей\n"
+        "📚 <b>Справка по командам:</b>\n\n"
+        "📥 <code>/bookmarks</code> — открыть список сохраненных материалов\n"
+        "🔍 <code>/search &lt;запрос&gt;</code> — умный семантический поиск\n"
         "🎲 <code>/random</code> — случайный непрочитанный материал\n"
-        "🏷 <code>/tags</code> — список ваших тегов\n"
+        "🏷 <code>/tags</code> — просмотр и фильтрация по тегам\n"
         "📊 <code>/stats</code> — статистика вашей базы знаний\n"
-        "☕️ <code>/digest</code> — еженедельный дайджест (вкл/выкл)\n"
-        "💾 <code>/export</code> — выгрузка базы в JSON\n\n"
-        "💡 <i>Листайте карточки стрелками прямо в сообщении!</i>"
+        "💾 <code>/export</code> — выгрузка в Markdown (Obsidian), CSV или JSON\n"
+        "📱 <code>/menu</code> — показать кнопки главного меню\n"
+        "⌨️ <code>/hide</code> — скрыть кнопки клавиатуры\n\n"
+        "💡 <i>Просто отправьте боту ссылку, фото или файл в любой момент!</i>"
     )
     await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
-@router.message(F.text.in_({"🕒 Недавние", "Недавние", "недавние"}))
-@router.message(Command("recent"))
-async def btn_recent(message: Message, session: AsyncSession):
-    from app.bot.handlers.manage import cmd_recent
-    await cmd_recent(message, session)
-
-
-@router.message(F.text.in_({"📖 Непрочитанные", "Непрочитанные", "непрочитанные"}))
-@router.message(Command("unread"))
-async def btn_unread(message: Message, session: AsyncSession):
-    from app.bot.handlers.manage import cmd_unread
-    await cmd_unread(message, session)
-
-
-@router.message(F.text.in_({"🏷 Теги", "Теги", "теги"}))
-@router.message(Command("tags"))
-async def btn_tags(message: Message, session: AsyncSession):
-    from app.bot.handlers.manage import cmd_tags
-    await cmd_tags(message, session)
-
-
-@router.message(F.text.in_({"🎲 Случайная", "Случайная", "случайная"}))
-@router.message(Command("random"))
-async def btn_random(message: Message, session: AsyncSession):
-    from app.bot.handlers.manage import cmd_random
-    await cmd_random(message, session)
-
-
-@router.message(F.text.in_({"📊 Статистика", "Статистика", "статистика"}))
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, session: AsyncSession):
     repo = BookmarkRepository(session)
@@ -132,26 +223,97 @@ async def cmd_stats(message: Message, session: AsyncSession):
     await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
-@router.message(Command("digest"))
-async def cmd_toggle_digest(message: Message, session: AsyncSession):
-    user_repo = UserRepository(session)
-    new_state = await user_repo.toggle_digest(message.from_user.id)
-    status_str = "включен ✅ (рассылка каждый понедельник)" if new_state else "выключен ⏸"
-    await message.answer(f"☕️ Еженедельный дайджест <b>{status_str}</b>.", reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
-
+# --- Мультиформатный экспорт: Markdown ZIP, CSV, JSON ---
 
 @router.message(Command("export"))
-async def cmd_export(message: Message, session: AsyncSession):
+async def cmd_export_menu(message: Message):
+    text = (
+        "💾 <b>Экспорт вашей базы знаний:</b>\n\n"
+        "Выберите удобный формат выгрузки:\n"
+        "• <b>Markdown (ZIP)</b> — архив заметок для Obsidian, Notion и Logseq.\n"
+        "• <b>CSV Таблица</b> — для Excel, Google Таблиц и Notion Import.\n"
+        "• <b>JSON</b> — полный снимок базы для резервного копирования."
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Markdown Архив (.zip)", callback_data="export_fmt:md")],
+            [InlineKeyboardButton(text="📊 Таблица CSV (.csv)", callback_data="export_fmt:csv")],
+            [InlineKeyboardButton(text="📦 Исходный JSON (.json)", callback_data="export_fmt:json")],
+        ]
+    )
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("export_fmt:"))
+async def cb_perform_export(callback: CallbackQuery, session: AsyncSession):
+    fmt = callback.data.split(":")[1]
     repo = BookmarkRepository(session)
-    bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, limit=5000)
+    bookmarks, total = await repo.list_bookmarks(user_id=callback.from_user.id, limit=5000)
 
     if not bookmarks:
-        await message.answer("У вас пока нет сохраненных закладок для экспорта.", reply_markup=get_main_reply_keyboard())
+        await callback.answer("У вас пока нет сохраненных закладок.", show_alert=True)
         return
 
-    export_data = []
-    for b in bookmarks:
-        export_data.append(
+    await callback.answer("Подготавливаю файл экспорта...")
+
+    if fmt == "md":
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for b in bookmarks:
+                tags_str = ", ".join([f'"{t.name}"' for t in b.tags])
+                md_content = (
+                    f"---\n"
+                    f"title: \"{b.title or 'Без названия'}\"\n"
+                    f"url: \"{b.url or ''}\"\n"
+                    f"author: \"{b.author or ''}\"\n"
+                    f"domain: \"{b.domain or ''}\"\n"
+                    f"tags: [{tags_str}]\n"
+                    f"created_at: \"{b.created_at.isoformat() if b.created_at else ''}\"\n"
+                    f"read: {str(b.is_read).lower()}\n"
+                    f"---\n\n"
+                    f"# {b.title or 'Без названия'}\n\n"
+                    f"**Оригинал:** {b.url or 'Заметка'}\n\n"
+                    f"## Краткая суть\n{b.summary or 'Нет описания'}\n\n"
+                    f"## Полный текст\n{b.full_text or ''}\n"
+                )
+                safe_title = "".join(c for c in (b.title or "note")[:40] if c.isalnum() or c in " _-").strip()
+                filename = f"{safe_title}_{str(b.id)[:8]}.md"
+                zip_file.writestr(filename, md_content.encode("utf-8"))
+
+        file_doc = BufferedInputFile(zip_buffer.getvalue(), filename="read_later_obsidian.zip")
+        await callback.message.answer_document(
+            document=file_doc,
+            caption=f"📦 Экспорт в <b>Markdown (ZIP)</b> готов! Файлов: {len(bookmarks)}.",
+            parse_mode="HTML",
+        )
+
+    elif fmt == "csv":
+        csv_buffer = io.StringIO()
+        writer = csv.writer(csv_buffer)
+        writer.writerow(["ID", "Title", "URL", "Author", "Domain", "Tags", "Reading Time Min", "Read", "Summary", "Created At"])
+        for b in bookmarks:
+            tags_str = ", ".join([t.name for t in b.tags])
+            writer.writerow([
+                str(b.id),
+                b.title or "",
+                b.url or "",
+                b.author or "",
+                b.domain or "",
+                tags_str,
+                b.reading_time_min,
+                b.is_read,
+                b.summary or "",
+                b.created_at.isoformat() if b.created_at else "",
+            ])
+        file_doc = BufferedInputFile(csv_buffer.getvalue().encode("utf-8-sig"), filename="read_later_bookmarks.csv")
+        await callback.message.answer_document(
+            document=file_doc,
+            caption=f"📊 Экспорт в <b>CSV</b> готов! Строк: {len(bookmarks)}.",
+            parse_mode="HTML",
+        )
+
+    elif fmt == "json":
+        export_data = [
             {
                 "id": str(b.id),
                 "title": b.title,
@@ -161,18 +323,15 @@ async def cmd_export(message: Message, session: AsyncSession):
                 "summary": b.summary,
                 "reading_time_min": b.reading_time_min,
                 "is_read": b.is_read,
-                "image_url": b.image_url,
                 "tags": [t.name for t in b.tags],
                 "created_at": b.created_at.isoformat() if b.created_at else None,
             }
+            for b in bookmarks
+        ]
+        json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
+        file_doc = BufferedInputFile(json_bytes, filename="read_later_dump.json")
+        await callback.message.answer_document(
+            document=file_doc,
+            caption=f"📦 Экспорт в <b>JSON</b> готов! Всего объектов: {len(bookmarks)}.",
+            parse_mode="HTML",
         )
-
-    json_str = json.dumps(export_data, ensure_ascii=False, indent=2)
-    bytes_io = io.BytesIO(json_str.encode("utf-8"))
-    file_doc = BufferedInputFile(bytes_io.getvalue(), filename="read_later_export.json")
-
-    await message.answer_document(
-        document=file_doc,
-        caption=f"📦 Экспорт завершен! Всего выгружено: {len(export_data)} закладок.",
-        reply_markup=get_main_reply_keyboard(),
-    )
