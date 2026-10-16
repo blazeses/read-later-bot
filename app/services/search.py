@@ -52,16 +52,19 @@ class HybridSearchService:
             candidate_lines = []
             for idx, b in enumerate(candidates, start=1):
                 title = (b.title or "Без названия").strip()
+                comment = (b.user_comment or "").strip()
                 domain = b.domain or "заметка"
                 tags = ", ".join([t.name for t in b.tags]) if b.tags else "нет"
-                snippet = (b.summary or b.full_text or "")[:180].strip().replace("\n", " ")
-                candidate_lines.append(f"{idx}. ID: {b.id} | Заголовок: {title} | Домен: {domain} | Теги: {tags} | Описание: {snippet}")
+                content_preview = (b.summary or b.full_text or "")[:180].strip().replace("\n", " ")
+                candidate_lines.append(
+                    f"{idx}. ID: {b.id} | Заголовок: {title} | Подпись/Заметка: {comment} | Домен: {domain} | Теги: {tags} | Описание: {content_preview}"
+                )
 
             prompt = (
                 f"Пользователь ищет материал в своих закладках по запросу: «{query}».\n\n"
                 f"Список сохраненных закладок:\n" + "\n".join(candidate_lines) + "\n\n"
                 "Выбери из списка ID материалов, которые соответствуют запросу пользователя по смыслу, теме или контексту "
-                "(даже если слова не совпадают буквально, либо являются синонимами, либо описывают суть).\n"
+                "(учитывай опечатки, пропущенные/лишние буквы, например 'тарбрис' и 'табрис', транслитерацию, синонимы или сходство звучания).\n"
                 "Верни JSON со списком подходящих ID от наиболее релевантного к менее релевантному:\n"
                 '{"matching_ids": ["uuid-1", "uuid-2"]}\n'
                 "Если ничего из списка не соответствует запросу, верни: {\"matching_ids\": []}"
@@ -90,11 +93,12 @@ class HybridSearchService:
                     mid_str = str(mid).strip()
                     if mid_str in b_map:
                         bm = b_map[mid_str]
+                        snippet = bm.summary or bm.user_comment or (bm.full_text[:300] if bm.full_text else "")
                         results.append(
                             SearchResultItem(
                                 bookmark=bm,
                                 score=0.95,
-                                relevant_snippet=bm.summary or bm.full_text[:300] or "",
+                                relevant_snippet=snippet,
                             )
                         )
                 if results:
@@ -171,7 +175,7 @@ class HybridSearchService:
             b_id = b_item.id
             rrf_scores[b_id] = rrf_scores.get(b_id, 0.0) + (t_score / (self.k + t_rank))
             if b_id not in doc_snippets:
-                snippet = b_item.summary or (b_item.full_text[:300] if b_item.full_text else "")
+                snippet = b_item.summary or b_item.user_comment or (b_item.full_text[:300] if b_item.full_text else "")
                 doc_snippets[b_id] = snippet
 
         # 4. Fetch full Bookmark objects & apply post-filters
@@ -197,8 +201,8 @@ class HybridSearchService:
                     continue
 
             snippet = doc_snippets.get(b_id, "")
-            if not snippet and bookmark.summary:
-                snippet = bookmark.summary
+            if not snippet:
+                snippet = bookmark.summary or bookmark.user_comment or ""
 
             matched_results.append(
                 SearchResultItem(
@@ -214,7 +218,7 @@ class HybridSearchService:
                 bookmark = await bookmark_repo.get_by_id(b_id, user_id=user_id)
                 if not bookmark:
                     continue
-                snippet = doc_snippets.get(b_id, bookmark.summary or "")
+                snippet = doc_snippets.get(b_id, bookmark.summary or bookmark.user_comment or "")
                 matched_results.append(
                     SearchResultItem(bookmark=bookmark, score=rrf_scores[b_id], relevant_snippet=snippet)
                 )

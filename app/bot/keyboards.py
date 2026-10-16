@@ -26,6 +26,21 @@ def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True, is_persistent=True)
 
 
+def make_safe_callback(prefix: str, *args) -> str:
+    """Ensure callback_data never exceeds Telegram's 64-byte limit."""
+    candidate = ":".join([prefix] + [str(a) for a in args if a is not None])
+    if len(candidate.encode("utf-8")) <= 64:
+        return candidate
+    # Fallback to minimal essential parts (always <= 50 bytes)
+    if args:
+        minimal = f"{prefix}:{args[0]}"
+        if len(args) > 1 and prefix in ("toggle_view", "op", "sp", "filter_tag"):
+            minimal = f"{prefix}:{args[0]}:{args[1]}"
+        if len(minimal.encode("utf-8")) <= 64:
+            return minimal
+    return candidate.encode("utf-8")[:64].decode("utf-8", errors="ignore")
+
+
 def get_bookmark_card_keyboard(
     bookmark_id: uuid.UUID,
     url: Optional[str] = None,
@@ -53,7 +68,7 @@ def get_bookmark_card_keyboard(
             nav_buttons.append(
                 InlineKeyboardButton(
                     text="« Назад",
-                    callback_data=f"{nav_prefix}:{current_page - 1}{extra}",
+                    callback_data=make_safe_callback(nav_prefix, current_page - 1, extra_data),
                 )
             )
         nav_buttons.append(
@@ -66,7 +81,7 @@ def get_bookmark_card_keyboard(
             nav_buttons.append(
                 InlineKeyboardButton(
                     text="Вперед »",
-                    callback_data=f"{nav_prefix}:{current_page + 1}{extra}",
+                    callback_data=make_safe_callback(nav_prefix, current_page + 1, extra_data),
                 )
             )
         builder.row(*nav_buttons)
@@ -74,21 +89,21 @@ def get_bookmark_card_keyboard(
     # 2. Main actions: Favorite & Tag editing
     np_safe = nav_prefix if nav_prefix else "_"
     ex_safe = extra_data if extra_data else "_"
-    fav_cb = f"toggle_fav:{bookmark_id}"
-    tags_cb = f"edit_tags:{bookmark_id}"
+    fav_cb = make_safe_callback("toggle_fav", bookmark_id)
+    tags_cb = make_safe_callback("edit_tags", bookmark_id)
 
     builder.row(
         InlineKeyboardButton(text="⭐ В избранное", callback_data=fav_cb),
         InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
     )
 
-    # 3. Read status and In-place text toggle
+    # 3. Read status and In-place text toggle (strictly <= 64 bytes)
     status_text = "📖 В непрочитанные" if is_read else "✅ Прочитано"
-    status_cb = f"toggle_read:{bookmark_id}:{np_safe}:{current_page}:{total_pages}:{ex_safe}"
+    status_cb = make_safe_callback("toggle_read", bookmark_id, np_safe, current_page, total_pages, ex_safe)
 
     view_text_mode = 0 if showing_full_text else 1
     view_label = "💡 Саммари" if showing_full_text else "📄 Полный текст"
-    toggle_view_cb = f"toggle_view:{bookmark_id}:{view_text_mode}:{np_safe}:{current_page}:{total_pages}:{ex_safe}"
+    toggle_view_cb = make_safe_callback("toggle_view", bookmark_id, view_text_mode, np_safe, current_page, total_pages, ex_safe)
 
     builder.row(
         InlineKeyboardButton(text=status_text, callback_data=status_cb),
@@ -96,10 +111,11 @@ def get_bookmark_card_keyboard(
     )
 
     # 4. Remind & Delete
-    remind_cb = f"remind_menu:{bookmark_id}"
+    remind_cb = make_safe_callback("remind_menu", bookmark_id)
+    delete_cb = make_safe_callback("delete", bookmark_id)
     builder.row(
         InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete:{bookmark_id}"),
+        InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
     )
 
     # 5. External URL and album photos
@@ -107,7 +123,7 @@ def get_bookmark_card_keyboard(
     if url and url.startswith("http"):
         ext_row.append(InlineKeyboardButton(text="🌐 Оригинал", url=url))
     if photo_count > 1:
-        ext_row.append(InlineKeyboardButton(text=f"🖼 Все фото ({photo_count})", callback_data=f"show_album:{bookmark_id}"))
+        ext_row.append(InlineKeyboardButton(text=f"🖼 Все фото ({photo_count})", callback_data=make_safe_callback("show_album", bookmark_id)))
     if ext_row:
         builder.row(*ext_row)
 
@@ -116,7 +132,7 @@ def get_bookmark_card_keyboard(
         builder.row(
             InlineKeyboardButton(
                 text="« 📋 К списку",
-                callback_data=f"{nav_prefix}:{current_page}",
+                callback_data=make_safe_callback(nav_prefix, current_page),
             )
         )
     elif nav_prefix in ("rnd", "random"):

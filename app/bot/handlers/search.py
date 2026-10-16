@@ -15,7 +15,20 @@ from app.db.repositories import BookmarkRepository
 from app.providers.registry import get_embedding_provider, get_vector_store
 from app.services.search import HybridSearchService
 
+import hashlib
+
 router = Router()
+
+_search_tokens: dict[str, str] = {}
+
+
+def get_search_token(query: str) -> str:
+    """Store active search query and return an 8-char token to keep callback_data <= 64 bytes."""
+    token = hashlib.md5(query.encode("utf-8")).hexdigest()[:8]
+    _search_tokens[token] = query
+    if len(_search_tokens) > 500:
+        _search_tokens.pop(next(iter(_search_tokens)))
+    return token
 
 
 class SearchState(StatesGroup):
@@ -60,54 +73,72 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
 
     status_msg = await message.answer(f"🔎 <i>Ищу «{html.escape(clean_q)}» по смыслу и ключевым словам...</i>", parse_mode="HTML")
 
-    search_service = get_search_service()
-    results, total_count = await search_service.search(
-        user_id=message.from_user.id,
-        query=clean_q,
-        session=session,
-        limit=1,
-        offset=0,
-    )
-
-    if not results:
-        # Zero-Dead-End empty state with helpful navigation
-        kb_empty = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🕒 Показать 5 недавних", callback_data="rl:1")],
-                [InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1")],
-                [InlineKeyboardButton(text="🏷 Популярные теги", callback_data="open_tags_menu")],
-            ]
-        )
-        await status_msg.edit_text(
-            f"🔍 По запросу <i>«{html.escape(clean_q)}»</i> ничего не найдено.\n\n"
-            "💡 <b>Советы для поиска:</b>\n"
-            "• Напишите только ключевое слово (например: <code>python</code>, <code>docker</code>, <code>маркетинг</code>)\n"
-            "• Опишите суть статьи своими словами — DeepSeek поймет контекст\n"
-            "• Или выберите материалы из разделов ниже:",
-            reply_markup=kb_empty,
-            parse_mode="HTML",
-        )
-        return
-
-    first = results[0]
-    b = first.bookmark
-    kb = get_bookmark_card_keyboard(
-        b.id,
-        url=b.url,
-        is_read=b.is_read,
-        nav_prefix="search_page",
-        current_page=1,
-        total_pages=total_count,
-        extra_data=clean_q[:30],
-        photo_count=get_photo_count(b),
-    )
-
     try:
-        await status_msg.delete()
-    except Exception:
-        pass
+        search_service = get_search_service()
+        results, total_count = await search_service.search(
+            user_id=message.from_user.id,
+            query=clean_q,
+            session=session,
+            limit=1,
+            offset=0,
+        )
 
-    await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
+        if not results:
+            kb_empty = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🕒 Показать 5 недавних", callback_data="rl:1")],
+                    [InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1")],
+                    [InlineKeyboardButton(text="🏷 Популярные теги", callback_data="open_tags_menu")],
+                ]
+            )
+            await status_msg.edit_text(
+                f"🔍 По запросу <i>«{html.escape(clean_q)}»</i> ничего не найдено.\n\n"
+                "💡 <b>Советы для поиска:</b>\n"
+                "• Напишите только ключевое слово (например: <code>табрис</code>, <code>docker</code>, <code>заметка</code>)\n"
+                "• Опишите суть статьи своими словами — DeepSeek поймет контекст\n"
+                "• Или выберите материалы из разделов ниже:",
+                reply_markup=kb_empty,
+                parse_mode="HTML",
+            )
+            return
+
+        first = results[0]
+        b = first.bookmark
+        token = get_search_token(clean_q)
+        kb = get_bookmark_card_keyboard(
+            b.id,
+            url=b.url,
+            is_read=b.is_read,
+            nav_prefix="sp",
+            current_page=1,
+            total_pages=total_count,
+            extra_data=token,
+            photo_count=get_photo_count(b),
+        )
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
+
+    except Exception as e:
+        log.exception(f"Error in execute_search for query '{query}': {e}")
+        try:
+            await status_msg.edit_text(
+                f"⚠️ <b>Не удалось завершить поиск «{html.escape(clean_q)}»:</b>\n"
+                "Попробуйте уточнить запрос или выберите материалы из недавних:",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="🕒 Показать недавние", callback_data="rl:1")],
+                        [InlineKeyboardButton(text="📖 Непрочитанные", callback_data="ul:1")],
+                    ]
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            await message.answer("⚠️ Ошибка поиска. Вы можете открыть «Недавние» через меню внизу.")
 
 
 @router.callback_query(F.data == "open_tags_menu")
@@ -177,11 +208,12 @@ async def process_search_query_state(message: Message, state: FSMContext, sessio
     await execute_search(message, text, session)
 
 
-@router.callback_query(F.data.startswith("search_page:"))
+@router.callback_query(F.data.startswith("sp:") | F.data.startswith("search_page:"))
 async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
     parts = callback.data.split(":", 2)
-    page = int(parts[1]) if parts[1].isdigit() else 1
-    query = parts[2] if len(parts) > 2 else ""
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    raw_val = parts[2] if len(parts) > 2 else ""
+    query = _search_tokens.get(raw_val, raw_val)
 
     offset = page - 1
     search_service = get_search_service()
@@ -198,14 +230,15 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
         return
 
     b = results[0].bookmark
+    token = get_search_token(query) if query else ""
     kb = get_bookmark_card_keyboard(
         b.id,
         url=b.url,
         is_read=b.is_read,
-        nav_prefix="search_page",
+        nav_prefix="sp",
         current_page=page,
         total_pages=total_count,
-        extra_data=query,
+        extra_data=token,
         photo_count=get_photo_count(b),
     )
     await update_card_message(callback, b, kb, page_info=(page, total_count))
