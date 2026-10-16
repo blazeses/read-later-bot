@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
+import json
+from typing import Dict, Optional, Set, Tuple
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +46,9 @@ class IngestionQueueService:
         self.queue: asyncio.Queue[IngestTask] = asyncio.Queue()
         self.workers: list[asyncio.Task] = []
         self._running = False
+        self._active_url_lock = asyncio.Lock()
+        self._active_urls: Set[Tuple[int, str]] = set()
+        self.failed_tasks: Dict[int, IngestTask] = {}
 
     def start(self, num_workers: int = settings.CONCURRENT_WORKERS):
         if self._running:
@@ -53,7 +57,7 @@ class IngestionQueueService:
         for i in range(num_workers):
             task = asyncio.create_task(self._worker_loop(i))
             self.workers.append(task)
-        log.info(f"Started {num_workers} background ingestion worker(s).")
+        log.info(f"Запущено {num_workers} воркеров очереди инжеста.")
 
     async def stop(self):
         self._running = False
@@ -65,6 +69,17 @@ class IngestionQueueService:
     async def enqueue(self, task: IngestTask):
         await self.queue.put(task)
 
+    async def _safe_edit_status(self, chat_id: int, message_id: int, text: str):
+        try:
+            await self.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
     async def _worker_loop(self, worker_id: int):
         while self._running:
             try:
@@ -74,22 +89,42 @@ class IngestionQueueService:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                log.exception(f"Unhandled error in ingestion worker {worker_id}: {e}")
+                log.exception(f"Необработанная ошибка в воркере {worker_id}: {e}")
 
     async def _process_task(self, task: IngestTask):
+        norm_url = None
+        if task.content_type in (ContentType.ARTICLE, ContentType.TWEET, ContentType.YOUTUBE):
+            norm_url = normalize_url(task.source)
+            # Защита от Race condition: блокировка одновременной обработки одинаковых URL одним юзером
+            async with self._active_url_lock:
+                key = (task.user_id, norm_url)
+                if key in self._active_urls:
+                    await self._safe_edit_status(
+                        task.chat_id,
+                        task.status_message_id,
+                        "ℹ️ Этот материал уже обрабатывается и сохраняется...",
+                    )
+                    return
+                self._active_urls.add(key)
+
+        try:
+            await self._run_ingest_pipeline(task, norm_url)
+        finally:
+            if norm_url:
+                async with self._active_url_lock:
+                    self._active_urls.discard((task.user_id, norm_url))
+
+    async def _run_ingest_pipeline(self, task: IngestTask, norm_url: Optional[str]):
         async with async_session_factory() as session:
             try:
                 user_repo = UserRepository(session)
                 tag_repo = TagRepository(session)
                 bookmark_repo = BookmarkRepository(session)
 
-                # Ensure user exists
                 await user_repo.get_or_create(task.user_id)
 
-                # 1. URL Normalization and Deduplication check
-                norm_url = None
-                if task.content_type in (ContentType.ARTICLE, ContentType.TWEET, ContentType.YOUTUBE):
-                    norm_url = normalize_url(task.source)
+                # 1. Дедупликация в БД
+                if norm_url:
                     existing = await bookmark_repo.get_by_normalized_url(norm_url, task.user_id)
                     if existing:
                         from app.bot.card_renderer import send_card_message
@@ -98,11 +133,18 @@ class IngestionQueueService:
                             await self.bot.delete_message(chat_id=task.chat_id, message_id=task.status_message_id)
                         except Exception:
                             pass
-                        kb = get_bookmark_card_keyboard(existing.id, existing.url, existing.is_read)
+                        photo_count = 1 if (existing.telegram_photo_id or existing.image_url) else 0
+                        kb = get_bookmark_card_keyboard(existing.id, existing.url, existing.is_read, photo_count=photo_count)
                         await send_card_message(self.bot, task.chat_id, existing, kb)
                         return
 
-                # 2. Extract content
+                # Progress State 1: Скачивание
+                await self._safe_edit_status(
+                    task.chat_id, task.status_message_id,
+                    "⏳ <b>[1/3] Скачиваю контент и очищаю от рекламы...</b>"
+                )
+
+                # 2. Экстракция
                 extracted: ExtractedContent
                 if task.content_type == ContentType.DOCUMENT:
                     extracted = await extractor_registry.extract_file(task.source, filename=task.filename)
@@ -118,7 +160,36 @@ class IngestionQueueService:
                     if task.telegram_photo_id:
                         extracted.telegram_photo_id = task.telegram_photo_id
 
-                # 3. LLM Enrichment (Tags, Summary, Reading time) via DeepSeek/configured LLM
+                # Если парсер упал и текста нет: предлагаем сохранить как заметку
+                if not extracted.success and not (extracted.text and len(extracted.text.strip()) > 10):
+                    self.failed_tasks[task.status_message_id] = task
+                    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+                    kb_fail = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text="📝 Сохранить как заметку", callback_data=f"save_raw_note:{task.status_message_id}")],
+                            [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data=f"retry_ingest:{task.status_message_id}")],
+                        ]
+                    )
+                    await self.bot.edit_message_text(
+                        chat_id=task.chat_id,
+                        message_id=task.status_message_id,
+                        text=(
+                            f"⚠️ <b>Не удалось автоматически разобрать страницу:</b>\n"
+                            f"<i>{extracted.error_message or 'Сайт защищен или недоступен'}</i>\n\n"
+                            "Вы можете сохранить ссылку как обычную текстовую заметку или попробовать снова:"
+                        ),
+                        reply_markup=kb_fail,
+                        parse_mode="HTML",
+                    )
+                    return
+
+                # Progress State 2: ИИ-анализ
+                await self._safe_edit_status(
+                    task.chat_id, task.status_message_id,
+                    "🧠 <b>[2/3] DeepSeek анализирует материал и формирует саммари...</b>"
+                )
+
+                # 3. LLM Обогащение
                 existing_tags_objs = await tag_repo.get_user_tags(task.user_id)
                 existing_tag_names = [t.name for t in existing_tags_objs]
 
@@ -129,11 +200,14 @@ class IngestionQueueService:
                     existing_tags=existing_tag_names,
                 )
 
-                # 4. Associate / Create Tags in DB
-                tags = await tag_repo.get_or_create_tags(task.user_id, enrichment.tags)
+                # Progress State 3: Сохранение
+                await self._safe_edit_status(
+                    task.chat_id, task.status_message_id,
+                    "✨ <b>[3/3] Подбираю теги и формирую карточку...</b>"
+                )
 
-                # 5. Create Bookmark in PostgreSQL
-                import json
+                # 4. Теги и Закладка в PostgreSQL
+                tags = await tag_repo.get_or_create_tags(task.user_id, enrichment.tags)
                 photos_json = json.dumps(task.photo_ids) if task.photo_ids else None
 
                 bookmark = await bookmark_repo.create(
@@ -155,7 +229,7 @@ class IngestionQueueService:
                 )
                 await session.commit()
 
-                # 6. Optional Chunking and Vector Embedding in Qdrant (only if external embeddings enabled)
+                # 5. Векторизация в Qdrant (если включен векторный провайдер)
                 if settings.EMBEDDING_PROVIDER not in ("none", "disabled", "deepseek", "deepseek_search") and extracted.text.strip():
                     try:
                         text_chunks = chunker.chunk_text(extracted.text)
@@ -170,30 +244,45 @@ class IngestionQueueService:
                             chunks=vector_chunks,
                         )
                     except Exception as emb_e:
-                        log.warning(f"Embedding/Vector store upsert skipped: {emb_e}")
+                        log.warning(f"Vector store upsert skipped: {emb_e}")
 
-                # 7. Render presentation card (photo card or text) cleanly
+                # 6. Отправка итоговой карточки
                 from app.bot.card_renderer import send_card_message
                 from app.bot.keyboards import get_bookmark_card_keyboard
 
-                photo_count = len(task.photo_ids) if task.photo_ids else (1 if bookmark.telegram_photo_id else 0)
+                photo_count = len(task.photo_ids) if task.photo_ids else (1 if (bookmark.telegram_photo_id or bookmark.image_url) else 0)
                 kb = get_bookmark_card_keyboard(
                     bookmark.id,
                     url=bookmark.url,
                     is_read=bookmark.is_read,
                     photo_count=photo_count,
                 )
+
                 try:
                     await self.bot.delete_message(chat_id=task.chat_id, message_id=task.status_message_id)
                 except Exception:
                     pass
 
                 await send_card_message(self.bot, task.chat_id, bookmark, kb)
+                self.failed_tasks.pop(task.status_message_id, None)
 
             except Exception as e:
-                log.exception(f"Error processing ingest task for user {task.user_id}: {e}")
+                # Обязательный rollback сессии asyncpg при любом сбое
+                await session.rollback()
+                log.exception(f"Ошибка сохранения закладки для user {task.user_id}: {e}")
+                
+                self.failed_tasks[task.status_message_id] = task
+                from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+                retry_kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data=f"retry_ingest:{task.status_message_id}")],
+                        [InlineKeyboardButton(text="📝 Сохранить как заметку", callback_data=f"save_raw_note:{task.status_message_id}")],
+                    ]
+                )
                 await self.bot.edit_message_text(
                     chat_id=task.chat_id,
                     message_id=task.status_message_id,
-                    text=f"❌ Произошла ошибка при сохранении закладки: {str(e)[:150]}",
+                    text=f"❌ <b>Не удалось обработать материал:</b>\n{str(e)[:150]}\n\nПопробуйте повторить запрос или сохранить ссылку как заметку.",
+                    reply_markup=retry_kb,
+                    parse_mode="HTML",
                 )
