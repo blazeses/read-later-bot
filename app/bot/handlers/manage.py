@@ -38,28 +38,33 @@ import html
 @router.message(Command("recent"))
 @router.message(F.text.in_({"🕒 Недавние", "Недавние", "недавние"}))
 async def cmd_recent(message: Message, session: AsyncSession):
-    repo = BookmarkRepository(session)
-    bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, limit=1, offset=0)
+    try:
+        repo = BookmarkRepository(session)
+        bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, limit=1, offset=0)
 
-    if not bookmarks:
-        await message.answer(
-            "📭 <b>У вас пока нет сохраненных закладок.</b>\n\n"
-            "Отправьте мне ссылку, текст, фото или файл, чтобы сохранить первый материал!",
-            parse_mode="HTML",
+        if not bookmarks:
+            await message.answer(
+                "📭 <b>У вас пока нет сохраненных закладок.</b>\n\n"
+                "Отправьте мне ссылку, текст, фото или файл, чтобы сохранить первый материал!",
+                parse_mode="HTML",
+            )
+            return
+
+        b = bookmarks[0]
+        kb = get_bookmark_card_keyboard(
+            b.id,
+            url=b.url,
+            is_read=b.is_read,
+            nav_prefix="recent_page",
+            current_page=1,
+            total_pages=total,
+            photo_count=get_photo_count(b),
         )
-        return
-
-    b = bookmarks[0]
-    kb = get_bookmark_card_keyboard(
-        b.id,
-        url=b.url,
-        is_read=b.is_read,
-        nav_prefix="recent_page",
-        current_page=1,
-        total_pages=total,
-        photo_count=get_photo_count(b),
-    )
-    await send_card_message(message, message.chat.id, b, kb, page_info=(1, total))
+        await send_card_message(message, message.chat.id, b, kb, page_info=(1, total))
+    except Exception as e:
+        from app.core.logger import log
+        log.exception(f"Error in cmd_recent: {e}")
+        await message.answer(f"⚠️ Не удалось загрузить недавние закладки. Ошибка: {str(e)[:150]}")
 
 
 @router.callback_query(F.data.startswith("recent_page:"))
