@@ -76,6 +76,23 @@ async def main():
     dp.include_router(manage.router)
     dp.include_router(bookmarks.router)
 
+    # 6. Set Bot Command Menu in Telegram UI
+    try:
+        from aiogram.types import BotCommand
+        await bot.set_my_commands([
+            BotCommand(command="menu", description="📱 Открыть меню кнопок"),
+            BotCommand(command="recent", description="🕒 Недавние материалы"),
+            BotCommand(command="search", description="🔍 Поиск по базе знаний"),
+            BotCommand(command="unread", description="📖 Непрочитанные статьи"),
+            BotCommand(command="tags", description="🏷 Поиск по тегам"),
+            BotCommand(command="random", description="🎲 Случайная статья"),
+            BotCommand(command="stats", description="📊 Статистика базы"),
+            BotCommand(command="help", description="❓ Справка по боту"),
+            BotCommand(command="hide", description="⌨️ Скрыть клавиатуру"),
+        ])
+    except Exception as cmd_err:
+        log.warning(f"Failed to set bot commands: {cmd_err}")
+
     log.info("Bot started successfully. Waiting for messages...")
 
     # Optional dummy HTTP server for cloud platforms (Hugging Face Spaces, Koyeb, Render)

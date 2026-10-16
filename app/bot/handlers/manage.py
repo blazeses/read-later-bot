@@ -32,13 +32,21 @@ def get_photo_count(b) -> int:
     return 1 if b.telegram_photo_id else 0
 
 
+import html
+
+
 @router.message(Command("recent"))
+@router.message(F.text.in_({"🕒 Недавние", "Недавние", "недавние"}))
 async def cmd_recent(message: Message, session: AsyncSession):
     repo = BookmarkRepository(session)
     bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, limit=1, offset=0)
 
     if not bookmarks:
-        await message.answer("У вас пока нет сохраненных закладок.")
+        await message.answer(
+            "📭 <b>У вас пока нет сохраненных закладок.</b>\n\n"
+            "Отправьте мне ссылку, текст, фото или файл, чтобы сохранить первый материал!",
+            parse_mode="HTML",
+        )
         return
 
     b = bookmarks[0]
@@ -79,6 +87,7 @@ async def cb_recent_page(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.message(Command("unread"))
+@router.message(F.text.in_({"📖 Непрочитанные", "Непрочитанные", "непрочитанные"}))
 async def cmd_unread(message: Message, session: AsyncSession):
     repo = BookmarkRepository(session)
     bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, is_read=False, limit=10)
@@ -89,7 +98,8 @@ async def cmd_unread(message: Message, session: AsyncSession):
 
     lines = [f"📖 <b>Список непрочитанных материалов (всего {total}):</b>\n"]
     for idx, b in enumerate(bookmarks, start=1):
-        link = f"<a href='{b.url}'>{b.title}</a>" if b.url else f"<b>{b.title}</b>"
+        safe_title = html.escape((b.title or "Без названия").strip())
+        link = f"<a href='{b.url}'>{safe_title}</a>" if b.url else f"<b>{safe_title}</b>"
         lines.append(f"{idx}. {link} (~{b.reading_time_min} мин.)")
 
     lines.append("\n<i>Используйте «🎲 Случайная» или /random, чтобы открыть случайную статью из непрочитанных.</i>")
@@ -97,6 +107,7 @@ async def cmd_unread(message: Message, session: AsyncSession):
 
 
 @router.message(Command("random"))
+@router.message(F.text.in_({"🎲 Случайная", "Случайная", "случайная"}))
 async def cmd_random(message: Message, session: AsyncSession):
     repo = BookmarkRepository(session)
     bookmark = await repo.get_random_unread(message.from_user.id)
@@ -115,6 +126,7 @@ async def cmd_random(message: Message, session: AsyncSession):
 
 
 @router.message(Command("tags"))
+@router.message(F.text.in_({"🏷 Теги", "Теги", "теги"}))
 async def cmd_tags(message: Message, session: AsyncSession):
     tag_repo = TagRepository(session)
     popular = await tag_repo.get_popular_tags(message.from_user.id, limit=30)

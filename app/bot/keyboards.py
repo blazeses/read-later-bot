@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
 def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Persistent reply keyboard displayed at the bottom of the chat."""
+    """Reply keyboard displayed at the bottom of the chat (collapsible)."""
     builder = ReplyKeyboardBuilder()
     builder.row(
         KeyboardButton(text="➕ Добавить статью"),
@@ -28,7 +28,10 @@ def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text="📊 Статистика"),
         KeyboardButton(text="❓ Помощь"),
     )
-    return builder.as_markup(resize_keyboard=True, is_persistent=True)
+    builder.row(
+        KeyboardButton(text="🔽 Скрыть меню"),
+    )
+    return builder.as_markup(resize_keyboard=True, is_persistent=False)
 
 
 def get_bookmark_card_keyboard(
