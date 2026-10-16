@@ -68,7 +68,8 @@ def validate_url_safe(url: str) -> None:
 
     # Проверка литерала IP
     try:
-        if not is_ip_allowed(hostname):
+        ip = ipaddress.ip_address(hostname)
+        if not is_ip_allowed(str(ip)):
             raise SSRFSecurityError(f"Доступ к приватному IP-адресу запрещен: {hostname}")
         return
     except ValueError:
