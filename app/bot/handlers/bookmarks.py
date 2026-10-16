@@ -1,8 +1,10 @@
 import asyncio
+import html
 import json
 import os
 import tempfile
 import uuid
+from typing import Optional
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,134 +53,194 @@ MENU_BUTTON_TEXTS = {
 }
 
 
+def extract_forward_author(message: Message) -> Optional[str]:
+    """Extract source channel or user author name from forwarded messages."""
+    origin = getattr(message, "forward_origin", None)
+    if origin:
+        origin_type = getattr(origin, "type", None)
+        if origin_type == "channel" and getattr(origin, "chat", None):
+            return origin.chat.title or origin.chat.username
+        elif origin_type == "user" and getattr(origin, "sender_user", None):
+            return origin.sender_user.full_name
+        elif origin_type == "hidden_user" and getattr(origin, "sender_user_name", None):
+            return origin.sender_user_name
+        elif origin_type == "chat" and getattr(origin, "sender_chat", None):
+            return origin.sender_chat.title
+
+    if message.forward_from_chat and message.forward_from_chat.title:
+        return message.forward_from_chat.title
+    if message.forward_sender_name:
+        return message.forward_sender_name
+    if message.forward_from and message.forward_from.full_name:
+        return message.forward_from.full_name
+
+    return None
+
+
 @router.message(F.text & ~F.text.startswith("/") & ~F.text.in_(MENU_BUTTON_TEXTS))
 async def handle_text_or_urls(message: Message):
     if not ingest_service:
         await message.answer("Сервис обработки временно недоступен.")
         return
 
-    text = message.text.strip()
-    urls = extract_urls(text)
+    try:
+        text = message.text.strip()
+        urls = extract_urls(text, message.entities)
+        author = extract_forward_author(message)
 
-    # 1. Ссылки в сообщении
-    if urls:
-        user_comment = text
-        for u in urls:
-            user_comment = user_comment.replace(u, "").strip()
-        user_comment = user_comment if user_comment else None
+        # 1. Ссылки в сообщении (прямые или гиперссылки)
+        if urls:
+            user_comment = text
+            for u in urls:
+                user_comment = user_comment.replace(u, "").strip()
+            user_comment = user_comment if user_comment else None
 
-        for url in urls:
-            if TWITTER_URL_REGEX.search(url):
-                c_type = ContentType.TWEET
-            elif YOUTUBE_REGEX.search(url):
-                c_type = ContentType.YOUTUBE
-            else:
-                c_type = ContentType.ARTICLE
+            for url in urls:
+                if TWITTER_URL_REGEX.search(url):
+                    c_type = ContentType.TWEET
+                elif YOUTUBE_REGEX.search(url):
+                    c_type = ContentType.YOUTUBE
+                else:
+                    c_type = ContentType.ARTICLE
 
-            status_msg = await message.answer(f"⏳ <b>[1/3] Скачиваю ссылку:</b> <i>{url}</i>...", parse_mode="HTML")
+                safe_url = html.escape(url)
+                try:
+                    status_msg = await message.answer(f"⏳ <b>[1/3] Скачиваю ссылку:</b> <i>{safe_url}</i>...", parse_mode="HTML")
+                except Exception:
+                    status_msg = await message.answer(f"⏳ [1/3] Скачиваю ссылку: {url}...")
+
+                task = IngestTask(
+                    user_id=message.from_user.id,
+                    chat_id=message.chat.id,
+                    status_message_id=status_msg.message_id,
+                    source=url,
+                    content_type=c_type,
+                    user_comment=user_comment,
+                    author=author,
+                )
+                await ingest_service.enqueue(task)
+
+        # 2. Обычный текст / новость без ссылок -> заметка / новость
+        else:
+            action_label = f"новость из «{html.escape(author)}»" if author else "заметку"
+            try:
+                status_msg = await message.answer(f"⏳ <b>[1/3] Сохраняю {action_label}...</b>", parse_mode="HTML")
+            except Exception:
+                status_msg = await message.answer("⏳ [1/3] Сохраняю материал...")
 
             task = IngestTask(
                 user_id=message.from_user.id,
                 chat_id=message.chat.id,
                 status_message_id=status_msg.message_id,
-                source=url,
-                content_type=c_type,
-                user_comment=user_comment,
+                source=text,
+                content_type=ContentType.NOTE,
+                user_comment=None,
+                author=author,
             )
             await ingest_service.enqueue(task)
 
-    # 2. Обычный текст без ссылок -> заметка / мысль
-    else:
-        status_msg = await message.answer("⏳ <b>[1/3] Сохраняю заметку...</b>", parse_mode="HTML")
-        task = IngestTask(
-            user_id=message.from_user.id,
-            chat_id=message.chat.id,
-            status_message_id=status_msg.message_id,
-            source=text,
-            content_type=ContentType.NOTE,
-            user_comment=None,
-        )
-        await ingest_service.enqueue(task)
+    except Exception as e:
+        log.exception(f"Ошибка при приёме текстового сообщения: {e}")
+        await message.answer("⚠️ Не удалось принять сообщение. Пожалуйста, отправьте ссылку или текст ещё раз.")
 
 
-@router.message(F.photo)
-async def handle_photo_upload(message: Message):
+@router.message(F.photo | F.video | F.animation)
+async def handle_media_upload(message: Message):
     if not ingest_service:
         await message.answer("Сервис обработки недоступен.")
         return
 
-    if message.media_group_id:
-        mg_id = message.media_group_id
-        if mg_id in _media_groups:
-            _media_groups[mg_id].append(message)
-            return
+    try:
+        if message.media_group_id:
+            mg_id = message.media_group_id
+            if mg_id in _media_groups:
+                _media_groups[mg_id].append(message)
+                return
 
-        _media_groups[mg_id] = [message]
-        await asyncio.sleep(0.8)
-        messages = _media_groups.pop(mg_id, [message])
-    else:
-        messages = [message]
+            _media_groups[mg_id] = [message]
+            await asyncio.sleep(0.8)
+            messages = _media_groups.pop(mg_id, [message])
+        else:
+            messages = [message]
 
-    photo_ids = [m.photo[-1].file_id for m in messages if m.photo]
-    primary_photo_id = photo_ids[0] if photo_ids else None
+        photo_ids = [m.photo[-1].file_id for m in messages if m.photo]
+        video_thumb_ids = [m.video.thumbnail.file_id for m in messages if m.video and m.video.thumbnail]
+        anim_thumb_ids = [m.animation.thumbnail.file_id for m in messages if m.animation and m.animation.thumbnail]
 
-    caption = ""
-    for m in messages:
-        if m.caption and m.caption.strip():
-            caption = m.caption.strip()
-            break
-
-    author = None
-    for m in messages:
-        if m.forward_from_chat and m.forward_from_chat.title:
-            author = m.forward_from_chat.title
-            break
-        elif m.forward_sender_name:
-            author = m.forward_sender_name
-            break
-        elif m.forward_from and m.forward_from.full_name:
-            author = m.forward_from.full_name
-            break
-
-    urls = extract_urls(caption)
-    count_label = f" ({len(photo_ids)} фото)" if len(photo_ids) > 1 else ""
-
-    if urls:
-        url = urls[0]
-        user_comment = caption.replace(url, "").strip() or None
-        status_msg = await messages[0].answer(
-            f"⏳ <b>[1/3] Сохраняю статью{count_label}:</b> <i>{url}</i>...",
-            parse_mode="HTML",
+        primary_photo_id = (
+            photo_ids[0] if photo_ids else
+            (video_thumb_ids[0] if video_thumb_ids else (anim_thumb_ids[0] if anim_thumb_ids else None))
         )
-        task = IngestTask(
-            user_id=messages[0].from_user.id,
-            chat_id=messages[0].chat.id,
-            status_message_id=status_msg.message_id,
-            source=url,
-            content_type=ContentType.ARTICLE,
-            user_comment=user_comment,
-            telegram_photo_id=primary_photo_id,
-            photo_ids=photo_ids,
-            author=author,
-        )
-        await ingest_service.enqueue(task)
-    else:
-        note_text = caption if caption else "Фото-заметка из Telegram"
-        status_msg = await messages[0].answer(
-            f"⏳ <b>[1/3] Сохраняю заметку{count_label}...</b>",
-            parse_mode="HTML",
-        )
-        task = IngestTask(
-            user_id=messages[0].from_user.id,
-            chat_id=messages[0].chat.id,
-            status_message_id=status_msg.message_id,
-            source=note_text,
-            content_type=ContentType.NOTE,
-            telegram_photo_id=primary_photo_id,
-            photo_ids=photo_ids,
-            author=author,
-        )
-        await ingest_service.enqueue(task)
+        all_media_ids = photo_ids or video_thumb_ids or anim_thumb_ids
+
+        caption = ""
+        caption_entities = None
+        for m in messages:
+            if m.caption and m.caption.strip():
+                caption = m.caption.strip()
+                caption_entities = m.caption_entities
+                break
+
+        author = None
+        for m in messages:
+            author = extract_forward_author(m)
+            if author:
+                break
+
+        urls = extract_urls(caption, caption_entities)
+        count_label = f" ({len(photo_ids)} фото)" if len(photo_ids) > 1 else ""
+
+        if urls:
+            url = urls[0]
+            user_comment = caption.replace(url, "").strip() or None
+            safe_url = html.escape(url)
+            try:
+                status_msg = await messages[0].answer(
+                    f"⏳ <b>[1/3] Сохраняю статью{count_label}:</b> <i>{safe_url}</i>...",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                status_msg = await messages[0].answer(f"⏳ [1/3] Сохраняю статью{count_label}: {url}...")
+
+            task = IngestTask(
+                user_id=messages[0].from_user.id,
+                chat_id=messages[0].chat.id,
+                status_message_id=status_msg.message_id,
+                source=url,
+                content_type=ContentType.ARTICLE,
+                user_comment=user_comment,
+                telegram_photo_id=primary_photo_id,
+                photo_ids=all_media_ids,
+                author=author,
+            )
+            await ingest_service.enqueue(task)
+        else:
+            default_label = "Видео-заметка" if any(m.video for m in messages) else ("GIF-анимация" if any(m.animation for m in messages) else "Фото-заметка")
+            note_text = caption if caption else f"{default_label} из Telegram"
+            action_label = f"новость{count_label}" if author else f"заметку{count_label}"
+            try:
+                status_msg = await messages[0].answer(
+                    f"⏳ <b>[1/3] Сохраняю {action_label}...</b>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                status_msg = await messages[0].answer(f"⏳ [1/3] Сохраняю материал{count_label}...")
+
+            task = IngestTask(
+                user_id=messages[0].from_user.id,
+                chat_id=messages[0].chat.id,
+                status_message_id=status_msg.message_id,
+                source=note_text,
+                content_type=ContentType.NOTE,
+                telegram_photo_id=primary_photo_id,
+                photo_ids=all_media_ids,
+                author=author,
+            )
+            await ingest_service.enqueue(task)
+
+    except Exception as e:
+        log.exception(f"Ошибка при приёме медиа-сообщения: {e}")
+        await message.answer("⚠️ Не удалось принять файл. Попробуйте отправить его ещё раз.")
 
 
 @router.message(F.document)

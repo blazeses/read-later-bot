@@ -1,6 +1,6 @@
 import re
 import urllib.parse
-from typing import List, Set
+from typing import List, Optional, Set
 
 URL_REGEX = re.compile(
     r"https?://(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d+)?(?:/[^\s<>'\"`()]*[^\s<>'\"`().,?!])?",
@@ -31,11 +31,37 @@ TRACKING_PARAMS: Set[str] = {
 }
 
 
-def extract_urls(text: str) -> List[str]:
-    """Extract all valid HTTP/HTTPS URLs from text."""
-    if not text:
-        return []
-    return URL_REGEX.findall(text)
+def extract_urls(text: Optional[str], entities: Optional[list] = None) -> List[str]:
+    """
+    Extract all valid HTTP/HTTPS URLs from text and Telegram message entities (including text_link hyperlinks).
+    """
+    urls: List[str] = []
+    seen: Set[str] = set()
+
+    # 1. Telegram entities (handles formatted text links: [тут](https://...))
+    if entities:
+        for ent in entities:
+            u = None
+            ent_type = getattr(ent, "type", None)
+            if ent_type == "text_link" and getattr(ent, "url", None):
+                u = ent.url.strip()
+            elif ent_type == "url" and text:
+                offset = getattr(ent, "offset", 0)
+                length = getattr(ent, "length", 0)
+                u = text[offset : offset + length].strip()
+            if u and u not in seen and u.startswith(("http://", "https://")):
+                seen.add(u)
+                urls.append(u)
+
+    # 2. Raw regex search in text string
+    if text:
+        for u in URL_REGEX.findall(text):
+            u_clean = u.strip()
+            if u_clean not in seen:
+                seen.add(u_clean)
+                urls.append(u_clean)
+
+    return urls
 
 
 def normalize_url(raw_url: str) -> str:

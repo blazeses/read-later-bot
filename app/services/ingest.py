@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import html
 import json
 from typing import Dict, Optional, Set, Tuple
 from aiogram import Bot
@@ -170,17 +171,30 @@ class IngestionQueueService:
                             [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data=f"retry_ingest:{task.status_message_id}")],
                         ]
                     )
-                    await self.bot.edit_message_text(
-                        chat_id=task.chat_id,
-                        message_id=task.status_message_id,
-                        text=(
-                            f"⚠️ <b>Не удалось автоматически разобрать страницу:</b>\n"
-                            f"<i>{extracted.error_message or 'Сайт защищен или недоступен'}</i>\n\n"
-                            "Вы можете сохранить ссылку как обычную текстовую заметку или попробовать снова:"
-                        ),
-                        reply_markup=kb_fail,
-                        parse_mode="HTML",
-                    )
+                    err_detail = html.escape(extracted.error_message or "Сайт защищен или недоступен")
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=task.chat_id,
+                            message_id=task.status_message_id,
+                            text=(
+                                f"⚠️ <b>Не удалось автоматически разобрать страницу:</b>\n"
+                                f"<i>{err_detail}</i>\n\n"
+                                "Вы можете сохранить ссылку как обычную текстовую заметку или попробовать снова:"
+                            ),
+                            reply_markup=kb_fail,
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        await self.bot.edit_message_text(
+                            chat_id=task.chat_id,
+                            message_id=task.status_message_id,
+                            text=(
+                                f"⚠️ Не удалось автоматически разобрать страницу:\n"
+                                f"{extracted.error_message or 'Сайт защищен или недоступен'}\n\n"
+                                "Вы можете сохранить ссылку как обычную текстовую заметку или попробовать снова:"
+                            ),
+                            reply_markup=kb_fail,
+                        )
                     return
 
                 # Progress State 2: ИИ-анализ
@@ -279,10 +293,22 @@ class IngestionQueueService:
                         [InlineKeyboardButton(text="📝 Сохранить как заметку", callback_data=f"save_raw_note:{task.status_message_id}")],
                     ]
                 )
-                await self.bot.edit_message_text(
-                    chat_id=task.chat_id,
-                    message_id=task.status_message_id,
-                    text=f"❌ <b>Не удалось обработать материал:</b>\n{str(e)[:150]}\n\nПопробуйте повторить запрос или сохранить ссылку как заметку.",
-                    reply_markup=retry_kb,
-                    parse_mode="HTML",
-                )
+                safe_err = html.escape(str(e)[:150])
+                try:
+                    await self.bot.edit_message_text(
+                        chat_id=task.chat_id,
+                        message_id=task.status_message_id,
+                        text=f"❌ <b>Не удалось обработать материал:</b>\n{safe_err}\n\nПопробуйте повторить запрос или сохранить ссылку как заметку.",
+                        reply_markup=retry_kb,
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=task.chat_id,
+                            message_id=task.status_message_id,
+                            text=f"❌ Не удалось обработать материал:\n{str(e)[:150]}\n\nПопробуйте повторить запрос или сохранить ссылку как заметку.",
+                            reply_markup=retry_kb,
+                        )
+                    except Exception:
+                        pass
