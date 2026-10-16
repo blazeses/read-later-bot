@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from typing import Dict, List, Optional
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,7 @@ from app.core.logger import log
 from app.db.models import Bookmark, ContentType
 from app.db.repositories import BookmarkRepository
 from app.providers.embeddings.base import BaseEmbeddingProvider
+from app.providers.registry import get_llm_provider
 from app.providers.vectorstore.base import BaseVectorStore
 from app.services.date_parser import parse_date_range_from_query
 
@@ -31,6 +33,76 @@ class HybridSearchService:
         self.vector_store = vector_store
         self.embedding_provider = embedding_provider
         self.k = k
+
+    async def _deepseek_semantic_fallback(
+        self,
+        user_id: int,
+        query: str,
+        bookmark_repo: BookmarkRepository,
+    ) -> List[SearchResultItem]:
+        """
+        AI-powered semantic search fallback when keyword search yields 0 matches.
+        Uses DeepSeek to match by meaning, context, synonyms, or conceptual requests.
+        """
+        try:
+            candidates, _ = await bookmark_repo.list_bookmarks(user_id=user_id, limit=30, offset=0)
+            if not candidates:
+                return []
+
+            candidate_lines = []
+            for idx, b in enumerate(candidates, start=1):
+                title = (b.title or "Без названия").strip()
+                domain = b.domain or "заметка"
+                tags = ", ".join([t.name for t in b.tags]) if b.tags else "нет"
+                snippet = (b.summary or b.full_text or "")[:180].strip().replace("\n", " ")
+                candidate_lines.append(f"{idx}. ID: {b.id} | Заголовок: {title} | Домен: {domain} | Теги: {tags} | Описание: {snippet}")
+
+            prompt = (
+                f"Пользователь ищет материал в своих закладках по запросу: «{query}».\n\n"
+                f"Список сохраненных закладок:\n" + "\n".join(candidate_lines) + "\n\n"
+                "Выбери из списка ID материалов, которые соответствуют запросу пользователя по смыслу, теме или контексту "
+                "(даже если слова не совпадают буквально, либо являются синонимами, либо описывают суть).\n"
+                "Верни JSON со списком подходящих ID от наиболее релевантного к менее релевантному:\n"
+                '{"matching_ids": ["uuid-1", "uuid-2"]}\n'
+                "Если ничего из списка не соответствует запросу, верни: {\"matching_ids\": []}"
+            )
+
+            llm = get_llm_provider()
+            client = getattr(llm, "client", None)
+            if client:
+                model = getattr(llm, "model", "deepseek-chat")
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are a smart search assistant for bookmarks. Respond only in valid JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.1,
+                )
+                raw_json = resp.choices[0].message.content or "{}"
+                data = json.loads(raw_json)
+                matching_ids = data.get("matching_ids", [])
+
+                b_map = {str(b.id): b for b in candidates}
+                results = []
+                for mid in matching_ids:
+                    mid_str = str(mid).strip()
+                    if mid_str in b_map:
+                        bm = b_map[mid_str]
+                        results.append(
+                            SearchResultItem(
+                                bookmark=bm,
+                                score=0.95,
+                                relevant_snippet=bm.summary or bm.full_text[:300] or "",
+                            )
+                        )
+                if results:
+                    log.info(f"DeepSeek semantic search found {len(results)} matches for query '{query}'")
+                return results
+        except Exception as e:
+            log.warning(f"DeepSeek semantic fallback skipped: {e}")
+        return []
 
     async def search(
         self,
@@ -55,7 +127,7 @@ class HybridSearchService:
 
         bookmark_repo = BookmarkRepository(session)
 
-        # 2. Parallel execution: Vector search (if enabled) + Fulltext search
+        # 2. Parallel execution: Vector search (if enabled) + Stemmed Fulltext search
         async def run_vector_search():
             if (
                 settings.EMBEDDING_PROVIDER in ("none", "disabled", "deepseek", "deepseek_search")
@@ -82,11 +154,9 @@ class HybridSearchService:
         )
 
         # 3. Reciprocal Rank Fusion (RRF)
-        # Group vector hits by bookmark_id, keeping best rank & snippet
         doc_snippets: Dict[uuid.UUID, str] = {}
         rrf_scores: Dict[uuid.UUID, float] = {}
 
-        # Vector rankings (already sorted by cosine score desc)
         seen_vector_docs = set()
         v_rank = 1
         for v_hit in vector_hits:
@@ -97,28 +167,22 @@ class HybridSearchService:
                 doc_snippets[b_id] = v_hit.text[:300]
                 v_rank += 1
 
-        # Fulltext rankings (sorted by ts_rank_cd desc)
-        for t_rank, (b_item, _) in enumerate(text_hits, start=1):
+        for t_rank, (b_item, t_score) in enumerate(text_hits, start=1):
             b_id = b_item.id
-            rrf_scores[b_id] = rrf_scores.get(b_id, 0.0) + (1.0 / (self.k + t_rank))
+            rrf_scores[b_id] = rrf_scores.get(b_id, 0.0) + (t_score / (self.k + t_rank))
             if b_id not in doc_snippets:
                 snippet = b_item.summary or (b_item.full_text[:300] if b_item.full_text else "")
                 doc_snippets[b_id] = snippet
 
-        if not rrf_scores:
-            return [], 0
-
-        # Sort candidate IDs by fused score
-        sorted_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
-
         # 4. Fetch full Bookmark objects & apply post-filters
+        sorted_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
         matched_results: List[SearchResultItem] = []
+
         for b_id in sorted_ids:
             bookmark = await bookmark_repo.get_by_id(b_id, user_id=user_id)
             if not bookmark:
                 continue
 
-            # Apply filters
             if is_read is not None and bookmark.is_read != is_read:
                 continue
             if content_type is not None and bookmark.content_type != content_type:
@@ -143,6 +207,27 @@ class HybridSearchService:
                     relevant_snippet=snippet,
                 )
             )
+
+        # 4b. If date filter excluded everything, retry without date filter
+        if not matched_results and (effective_from or effective_to):
+            for b_id in sorted_ids:
+                bookmark = await bookmark_repo.get_by_id(b_id, user_id=user_id)
+                if not bookmark:
+                    continue
+                snippet = doc_snippets.get(b_id, bookmark.summary or "")
+                matched_results.append(
+                    SearchResultItem(bookmark=bookmark, score=rrf_scores[b_id], relevant_snippet=snippet)
+                )
+
+        # 5. If STILL 0 results, use DeepSeek AI Semantic Search Fallback!
+        if not matched_results:
+            ai_matches = await self._deepseek_semantic_fallback(
+                user_id=user_id,
+                query=query,
+                bookmark_repo=bookmark_repo,
+            )
+            if ai_matches:
+                matched_results = ai_matches
 
         total_count = len(matched_results)
         paged_results = matched_results[offset : offset + limit]

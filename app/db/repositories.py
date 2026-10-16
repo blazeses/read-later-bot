@@ -306,6 +306,49 @@ class BookmarkRepository:
             "tags_count": tags_count,
         }
 
+def extract_search_terms(query: str) -> List[str]:
+    """
+    Extract meaningful search terms and word stems for Russian and English.
+    Handles grammatical inflections, punctuation, and multi-word queries.
+    """
+    import re
+    cleaned = re.sub(r"[^\w\s-]", " ", query.lower()).strip()
+    raw_words = [w.strip() for w in cleaned.split() if len(w.strip()) >= 2]
+    if not raw_words:
+        return [query.strip().lower()] if query.strip() else []
+
+    terms = set()
+    ru_suffixes = (
+        "оваться", "иваться", "ываться", "ельного", "ельному",
+        "овать", "ивать", "ывать", "ение", "ения", "ению", "ениями",
+        "тель", "ость", "ости", "остью", "остях", "ями", "ами",
+        "ого", "его", "ому", "ему", "ыми", "ими", "ный", "ная", "ное",
+        "ные", "ных", "ным", "ном", "ную",
+        "ый", "ий", "ая", "яя", "ое", "ее", "ые", "ие",
+        "ам", "ям", "ом", "ем", "ой", "ей", "ах", "ях", "ов", "ев",
+        "ть", "ти", "ла", "ли", "ло", "ал", "ил", "ел",
+        "ую", "юю", "а", "е", "и", "о", "у", "ы", "э", "ю", "я", "ь"
+    )
+    en_suffixes = ("ation", "tions", "tion", "ing", "ies", "ed", "es", "s")
+
+    for w in raw_words:
+        terms.add(w)
+        if len(w) >= 4:
+            stem_found = False
+            for suf in ru_suffixes:
+                if w.endswith(suf) and len(w) - len(suf) >= 3:
+                    terms.add(w[: len(w) - len(suf)])
+                    stem_found = True
+                    break
+            if not stem_found:
+                for suf in en_suffixes:
+                    if w.endswith(suf) and len(w) - len(suf) >= 3:
+                        terms.add(w[: len(w) - len(suf)])
+                        break
+
+    return [t for t in terms if len(t) >= 2]
+
+
     async def fulltext_search(
         self,
         user_id: int,
@@ -313,55 +356,100 @@ class BookmarkRepository:
         limit: int = 20,
     ) -> List[Tuple[Bookmark, float]]:
         """
-        Fulltext search using PostgreSQL tsvector / ts_rank_cd,
-        or substring/ILike fallback on other dialects (e.g. SQLite).
+        Smart multi-field search with root stemming, tag matching,
+        and PostgreSQL tsvector search with guaranteed fallback.
         """
-        dialect = self.session.bind.dialect.name if self.session.bind else "postgresql"
-        if dialect == "postgresql":
-            # Postgres tsquery search
+        from app.core.logger import log
+
+        results_map: Dict[uuid.UUID, Tuple[Bookmark, float]] = {}
+
+        # 1. Try PostgreSQL native full-text search with dynamic to_tsvector
+        try:
             ts_query = func.plainto_tsquery("russian", query)
-            rank = func.ts_rank_cd(Bookmark.tsv_content, ts_query).label("rank")
+            combined_text = (
+                func.coalesce(Bookmark.title, "")
+                + " "
+                + func.coalesce(Bookmark.summary, "")
+                + " "
+                + func.coalesce(Bookmark.domain, "")
+            )
+            dyn_tsv = func.to_tsvector("russian", combined_text)
+            rank = func.ts_rank_cd(dyn_tsv, ts_query).label("rank")
             stmt = (
                 select(Bookmark, rank)
                 .options(selectinload(Bookmark.tags))
-                .where(
-                    and_(
-                        Bookmark.user_id == user_id,
-                        Bookmark.tsv_content.op("@@")(ts_query),
-                    )
-                )
+                .where(and_(Bookmark.user_id == user_id, dyn_tsv.op("@@")(ts_query)))
                 .order_by(desc("rank"))
                 .limit(limit)
             )
             res = await self.session.execute(stmt)
-            pg_matches = [(row[0], float(row[1])) for row in res.all()]
-            if pg_matches:
-                return pg_matches
+            for row in res.all():
+                bm = row[0]
+                r_score = float(row[1]) + 2.0
+                results_map[bm.id] = (bm, r_score)
+        except Exception as pg_err:
+            log.debug(f"PostgreSQL plainto_tsquery skipped: {pg_err}")
 
-        # Fallback ILIKE search (for SQLite, or when tsquery found 0 matches)
-        words = [w.strip() for w in query.split() if len(w.strip()) >= 2]
-        if not words:
-            words = [query.strip()] if query.strip() else []
+        # 2. Multi-field term and stem search (handles Russian/English inflections & tags)
+        terms = extract_search_terms(query)
+        if terms:
+            term_conditions = []
+            for t in terms:
+                term_pattern = f"%{t}%"
+                term_conditions.append(
+                    or_(
+                        Bookmark.title.ilike(term_pattern),
+                        Bookmark.summary.ilike(term_pattern),
+                        Bookmark.full_text.ilike(term_pattern),
+                        Bookmark.domain.ilike(term_pattern),
+                        Bookmark.author.ilike(term_pattern),
+                        Bookmark.user_comment.ilike(term_pattern),
+                        Bookmark.tags.any(Tag.name.ilike(term_pattern)),
+                    )
+                )
 
-        ilike_filters = [
-            or_(
-                Bookmark.title.ilike(f"%{w}%"),
-                Bookmark.summary.ilike(f"%{w}%"),
-                Bookmark.full_text.ilike(f"%{w}%"),
-                Bookmark.domain.ilike(f"%{w}%"),
+            stmt = (
+                select(Bookmark)
+                .options(selectinload(Bookmark.tags))
+                .where(and_(Bookmark.user_id == user_id, or_(*term_conditions)))
+                .order_by(Bookmark.created_at.desc())
+                .limit(limit * 2)
             )
-            for w in words
-        ]
-        stmt = (
-            select(Bookmark)
-            .options(selectinload(Bookmark.tags))
-            .where(and_(Bookmark.user_id == user_id, or_(*ilike_filters) if ilike_filters else text("1=1")))
-            .order_by(Bookmark.created_at.desc())
-            .limit(limit)
-        )
-        res = await self.session.execute(stmt)
-        bookmarks = list(res.scalars().all())
-        return [(b, 1.0 / (idx + 1)) for idx, b in enumerate(bookmarks)]
+            res = await self.session.execute(stmt)
+            for bm in res.scalars().all():
+                score = 0.0
+                t_lower = (bm.title or "").lower()
+                s_lower = (bm.summary or "").lower()
+                d_lower = (bm.domain or "").lower()
+                a_lower = (bm.author or "").lower()
+                c_lower = (bm.user_comment or "").lower()
+                tags_lower = [tag.name.lower() for tag in bm.tags]
+
+                q_lower = query.lower().strip()
+                if q_lower in t_lower or any(q_lower in tag for tag in tags_lower):
+                    score += 20.0
+                if q_lower in s_lower:
+                    score += 10.0
+
+                for t in terms:
+                    if t in t_lower:
+                        score += 8.0
+                    if any(t in tag for tag in tags_lower):
+                        score += 6.0
+                    if t in s_lower:
+                        score += 4.0
+                    if t in d_lower or t in a_lower or t in c_lower:
+                        score += 3.0
+                    score += 1.0
+
+                if bm.id in results_map:
+                    old_bm, old_score = results_map[bm.id]
+                    results_map[bm.id] = (bm, old_score + score)
+                else:
+                    results_map[bm.id] = (bm, score)
+
+        sorted_results = sorted(results_map.values(), key=lambda x: x[1], reverse=True)
+        return sorted_results[:limit]
 
 
 class EmbeddingCacheRepository:

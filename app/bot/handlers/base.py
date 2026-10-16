@@ -67,18 +67,6 @@ async def btn_add_article(message: Message):
     await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
-@router.message(F.text.in_({"🔍 Поиск", "Поиск"}))
-async def btn_search_prompt(message: Message):
-    text = (
-        "🔍 <b>Поиск по сохраненным материалам:</b>\n\n"
-        "Напишите команду <code>/search &lt;запрос&gt;</code>, например:\n"
-        "• <code>/search микросервисы и docker</code>\n"
-        "• <code>/search python async за последний месяц</code>\n"
-        "• <code>/search искусственный интеллект</code>\n\n"
-        "<i>Поиск работает по смыслу, заголовкам, саммари, тексту и тегам!</i>"
-    )
-    await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
-
 
 @router.message(F.text.in_({"❓ Помощь", "Помощь"}))
 @router.message(Command("help"))
