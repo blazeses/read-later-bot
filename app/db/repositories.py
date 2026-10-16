@@ -192,6 +192,7 @@ class BookmarkRepository:
         tags: Optional[List[Tag]] = None,
         image_url: Optional[str] = None,
         telegram_photo_id: Optional[str] = None,
+        telegram_video_id: Optional[str] = None,
         photos_json: Optional[str] = None,
     ) -> Bookmark:
         bookmark = Bookmark(
@@ -210,6 +211,7 @@ class BookmarkRepository:
             tags=tags or [],
             image_url=image_url,
             telegram_photo_id=telegram_photo_id,
+            telegram_video_id=telegram_video_id,
             photos_json=photos_json,
         )
 

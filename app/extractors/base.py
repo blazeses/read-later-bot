@@ -18,6 +18,7 @@ class ExtractedContent:
     error_message: Optional[str] = None
     image_url: Optional[str] = None
     telegram_photo_id: Optional[str] = None
+    telegram_video_id: Optional[str] = None
 
     @property
     def has_sufficient_text(self) -> bool:

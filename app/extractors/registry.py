@@ -32,10 +32,12 @@ class ContentExtractorRegistry:
         text: str,
         user_comment: Optional[str] = None,
         telegram_photo_id: Optional[str] = None,
+        telegram_video_id: Optional[str] = None,
         author: Optional[str] = None,
     ) -> ExtractedContent:
         lines = [line.strip() for line in text.split("\n") if line.strip()]
-        title = lines[0][:80] if lines else ("Фото-заметка" if telegram_photo_id else "Заметка")
+        default_label = "Видео-заметка" if telegram_video_id else ("Фото-заметка" if telegram_photo_id else "Заметка")
+        title = lines[0][:80] if lines else default_label
         if len(title) == 80:
             title += "..."
 
@@ -50,6 +52,7 @@ class ContentExtractorRegistry:
             url=None,
             success=True,
             telegram_photo_id=telegram_photo_id,
+            telegram_video_id=telegram_video_id,
         )
 
 

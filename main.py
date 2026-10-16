@@ -25,6 +25,7 @@ async def init_databases():
             await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS image_url TEXT;"))
             await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_photo_id TEXT;"))
             await conn.execute(text("ALTER TABLE bookmarks ALTER COLUMN telegram_photo_id TYPE TEXT;"))
+            await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_video_id TEXT;"))
             await conn.execute(text("ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;"))
         except Exception as e:
             log.debug(f"Schema column check skipped or not needed: {e}")

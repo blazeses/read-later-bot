@@ -37,7 +37,7 @@ def get_photo_count(b: Bookmark) -> int:
                 return len(photos)
         except Exception:
             pass
-    return 1 if b.telegram_photo_id else 0
+    return 1 if (b.telegram_photo_id or getattr(b, "telegram_video_id", None)) else 0
 
 
 def render_bookmarks_list(
@@ -155,6 +155,7 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             current_page=current_page,
             total_pages=1,
             photo_count=get_photo_count(bookmark),
+            is_note=(bookmark.content_type == ContentType.NOTE),
         )
         await update_card_message(callback, bookmark, kb)
         await callback.answer()
@@ -236,6 +237,7 @@ async def cmd_random(message: Message, session: AsyncSession):
         bookmark.is_read,
         nav_prefix="random",
         photo_count=get_photo_count(bookmark),
+        is_note=(bookmark.content_type == ContentType.NOTE),
     )
     await send_card_message(message, message.chat.id, bookmark, kb)
 
@@ -263,6 +265,7 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
         bookmark.is_read,
         nav_prefix="random",
         photo_count=get_photo_count(bookmark),
+        is_note=(bookmark.content_type == ContentType.NOTE),
     )
     await update_card_message(callback, bookmark, kb)
     await callback.answer()
@@ -315,6 +318,7 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         total_pages=total,
         extra_data=tag_name,
         photo_count=get_photo_count(b),
+        is_note=(b.content_type == ContentType.NOTE),
     )
 
     if "filter_tag:" in (callback.message.reply_markup.inline_keyboard[0][0].callback_data if callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0] else ""):

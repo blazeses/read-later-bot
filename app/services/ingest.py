@@ -37,6 +37,7 @@ class IngestTask:
     user_comment: Optional[str] = None
     filename: Optional[str] = None
     telegram_photo_id: Optional[str] = None
+    telegram_video_id: Optional[str] = None
     photo_ids: Optional[list[str]] = None
     author: Optional[str] = None
 
@@ -134,8 +135,14 @@ class IngestionQueueService:
                             await self.bot.delete_message(chat_id=task.chat_id, message_id=task.status_message_id)
                         except Exception:
                             pass
-                        photo_count = 1 if (existing.telegram_photo_id or existing.image_url) else 0
-                        kb = get_bookmark_card_keyboard(existing.id, existing.url, existing.is_read, photo_count=photo_count)
+                        photo_count = 1 if (existing.telegram_photo_id or existing.image_url or getattr(existing, "telegram_video_id", None)) else 0
+                        kb = get_bookmark_card_keyboard(
+                            existing.id,
+                            existing.url,
+                            existing.is_read,
+                            photo_count=photo_count,
+                            is_note=(existing.content_type == ContentType.NOTE),
+                        )
                         await send_card_message(self.bot, task.chat_id, existing, kb)
                         return
 
@@ -154,12 +161,15 @@ class IngestionQueueService:
                         task.source,
                         task.user_comment,
                         telegram_photo_id=task.telegram_photo_id,
+                        telegram_video_id=task.telegram_video_id,
                         author=task.author,
                     )
                 else:
                     extracted = await extractor_registry.extract_url(task.source)
                     if task.telegram_photo_id:
                         extracted.telegram_photo_id = task.telegram_photo_id
+                    if task.telegram_video_id:
+                        extracted.telegram_video_id = task.telegram_video_id
 
                 # Если парсер упал и текста нет: предлагаем сохранить как заметку
                 if not extracted.success and not (extracted.text and len(extracted.text.strip()) > 10):
@@ -203,16 +213,38 @@ class IngestionQueueService:
                     "🧠 <b>[2/3] DeepSeek анализирует материал и формирует саммари...</b>"
                 )
 
-                # 3. LLM Обогащение
+                # 3. LLM Обогащение (для статей - саммари и теги; для заметок - сохранение 1:1 без перевода и правок)
+                is_note = (task.content_type == ContentType.NOTE)
                 existing_tags_objs = await tag_repo.get_user_tags(task.user_id)
                 existing_tag_names = [t.name for t in existing_tags_objs]
 
-                llm = get_llm_provider()
-                enrichment = await llm.enrich_bookmark(
-                    title=extracted.title or "Без названия",
-                    text=extracted.text or task.source,
-                    existing_tags=existing_tag_names,
-                )
+                final_full_text = extracted.text or task.source
+                if is_note:
+                    # Для заметок строго сохраняем оригинальный текст пользователя 1:1
+                    final_summary = final_full_text
+                    try:
+                        llm = get_llm_provider()
+                        enrichment = await llm.enrich_bookmark(
+                            title=extracted.title or "Заметка",
+                            text=final_full_text,
+                            existing_tags=existing_tag_names,
+                        )
+                        assigned_tags = enrichment.tags
+                        reading_time = enrichment.reading_time_min
+                    except Exception as llm_err:
+                        log.warning(f"Ошибка подбора тегов для заметки: {llm_err}")
+                        assigned_tags = ["заметка"]
+                        reading_time = 1
+                else:
+                    llm = get_llm_provider()
+                    enrichment = await llm.enrich_bookmark(
+                        title=extracted.title or "Без названия",
+                        text=final_full_text,
+                        existing_tags=existing_tag_names,
+                    )
+                    final_summary = enrichment.summary
+                    assigned_tags = enrichment.tags
+                    reading_time = enrichment.reading_time_min
 
                 # Progress State 3: Сохранение
                 await self._safe_edit_status(
@@ -221,7 +253,7 @@ class IngestionQueueService:
                 )
 
                 # 4. Теги и Закладка в PostgreSQL
-                tags = await tag_repo.get_or_create_tags(task.user_id, enrichment.tags)
+                tags = await tag_repo.get_or_create_tags(task.user_id, assigned_tags)
                 photos_json = json.dumps(task.photo_ids) if task.photo_ids else None
 
                 bookmark = await bookmark_repo.create(
@@ -232,13 +264,14 @@ class IngestionQueueService:
                     title=extracted.title,
                     author=extracted.author or task.author,
                     domain=extracted.domain,
-                    full_text=extracted.text or task.source,
-                    summary=enrichment.summary,
-                    reading_time_min=enrichment.reading_time_min,
+                    full_text=final_full_text,
+                    summary=final_summary,
+                    reading_time_min=reading_time,
                     user_comment=task.user_comment,
                     tags=tags,
                     image_url=extracted.image_url,
                     telegram_photo_id=extracted.telegram_photo_id or task.telegram_photo_id,
+                    telegram_video_id=extracted.telegram_video_id or task.telegram_video_id,
                     photos_json=photos_json,
                 )
                 await session.commit()
@@ -264,12 +297,14 @@ class IngestionQueueService:
                 from app.bot.card_renderer import send_card_message
                 from app.bot.keyboards import get_bookmark_card_keyboard
 
-                photo_count = len(task.photo_ids) if task.photo_ids else (1 if (bookmark.telegram_photo_id or bookmark.image_url) else 0)
+                photo_count = len(task.photo_ids) if task.photo_ids else (1 if (bookmark.telegram_photo_id or bookmark.image_url or bookmark.telegram_video_id) else 0)
+                is_note = (bookmark.content_type == ContentType.NOTE)
                 kb = get_bookmark_card_keyboard(
                     bookmark.id,
                     url=bookmark.url,
                     is_read=bookmark.is_read,
                     photo_count=photo_count,
+                    is_note=is_note,
                 )
 
                 try:

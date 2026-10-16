@@ -51,7 +51,7 @@ def get_photo_count(b) -> int:
                 return len(photos)
         except Exception:
             pass
-    return 1 if (b.telegram_photo_id or b.image_url) else 0
+    return 1 if (b.telegram_photo_id or b.image_url or getattr(b, "telegram_video_id", None)) else 0
 
 
 async def execute_search(message: Message, query: str, session: AsyncSession):
@@ -114,6 +114,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
             total_pages=total_count,
             extra_data=token,
             photo_count=get_photo_count(b),
+            is_note=(b.content_type == ContentType.NOTE),
         )
 
         await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
@@ -245,6 +246,7 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_count,
         extra_data=token,
         photo_count=get_photo_count(b),
+        is_note=(b.content_type == ContentType.NOTE),
     )
     await update_card_message(callback, b, kb, page_info=(page, total_count))
     await callback.answer()

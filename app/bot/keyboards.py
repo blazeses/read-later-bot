@@ -55,6 +55,7 @@ def get_bookmark_card_keyboard(
     total_pages: int = 1,
     extra_data: str = "",
     photo_count: int = 1,
+    is_note: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for bookmark cards with action buttons:
@@ -105,14 +106,18 @@ def get_bookmark_card_keyboard(
     status_text = "📖 В непрочитанные" if is_read else "✅ Прочитано"
     status_cb = make_safe_callback("toggle_read", bookmark_id, np_safe, current_page, total_pages, ex_safe)
 
-    view_text_mode = 0 if showing_full_text else 1
-    view_label = "💡 Саммари" if showing_full_text else "📄 Полный текст"
-    toggle_view_cb = make_safe_callback("toggle_view", bookmark_id, view_text_mode, np_safe, current_page, total_pages, ex_safe)
-
-    builder.row(
-        InlineKeyboardButton(text=status_text, callback_data=status_cb),
-        InlineKeyboardButton(text=view_label, callback_data=toggle_view_cb),
-    )
+    if is_note:
+        builder.row(
+            InlineKeyboardButton(text=status_text, callback_data=status_cb),
+        )
+    else:
+        view_text_mode = 0 if showing_full_text else 1
+        view_label = "💡 Саммари" if showing_full_text else "📄 Полный текст"
+        toggle_view_cb = make_safe_callback("toggle_view", bookmark_id, view_text_mode, np_safe, current_page, total_pages, ex_safe)
+        builder.row(
+            InlineKeyboardButton(text=status_text, callback_data=status_cb),
+            InlineKeyboardButton(text=view_label, callback_data=toggle_view_cb),
+        )
 
     # 4. Remind & Delete
     remind_cb = make_safe_callback("remind_menu", bookmark_id)

@@ -107,6 +107,7 @@ class Bookmark(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     telegram_photo_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    telegram_video_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     photos_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tsv_content = mapped_column(SafeTSVector, nullable=True)
 

@@ -55,6 +55,7 @@ class AnthropicLLMProvider(BaseLLMProvider):
             "model": self.model,
             "max_tokens": 1024,
             "temperature": 0.2,
+            "system": "Ты — интеллектуальный ассистент каталогизации базы знаний. Отвечай строго на языке исходного материала, никогда не переводи текст.",
             "messages": [
                 {"role": "user", "content": prompt},
             ],

@@ -164,14 +164,20 @@ async def handle_media_upload(message: Message):
             messages = [message]
 
         photo_ids = [m.photo[-1].file_id for m in messages if m.photo]
-        video_thumb_ids = [m.video.thumbnail.file_id for m in messages if m.video and m.video.thumbnail]
-        anim_thumb_ids = [m.animation.thumbnail.file_id for m in messages if m.animation and m.animation.thumbnail]
+        video_ids = [m.video.file_id for m in messages if m.video]
+        anim_ids = [m.animation.file_id for m in messages if m.animation]
 
-        primary_photo_id = (
-            photo_ids[0] if photo_ids else
-            (video_thumb_ids[0] if video_thumb_ids else (anim_thumb_ids[0] if anim_thumb_ids else None))
-        )
-        all_media_ids = photo_ids or video_thumb_ids or anim_thumb_ids
+        primary_video_id = video_ids[0] if video_ids else (anim_ids[0] if anim_ids else None)
+        primary_photo_id = photo_ids[0] if photo_ids else None
+        
+        # Если фото нет, но у видео/анимации есть превью, сохраняем его в telegram_photo_id
+        if not primary_photo_id:
+            if messages[0].video and messages[0].video.thumbnail:
+                primary_photo_id = messages[0].video.thumbnail.file_id
+            elif messages[0].animation and messages[0].animation.thumbnail:
+                primary_photo_id = messages[0].animation.thumbnail.file_id
+
+        all_media_ids = photo_ids or video_ids or anim_ids
 
         caption = ""
         caption_entities = None
@@ -210,14 +216,16 @@ async def handle_media_upload(message: Message):
                 content_type=ContentType.ARTICLE,
                 user_comment=user_comment,
                 telegram_photo_id=primary_photo_id,
+                telegram_video_id=primary_video_id,
                 photo_ids=all_media_ids,
                 author=author,
             )
             await ingest_service.enqueue(task)
         else:
-            default_label = "Видео-заметка" if any(m.video for m in messages) else ("GIF-анимация" if any(m.animation for m in messages) else "Фото-заметка")
+            default_label = "Видео-заметка" if primary_video_id else "Фото-заметка"
             note_text = caption if caption else f"{default_label} из Telegram"
-            action_label = f"новость{count_label}" if author else f"заметку{count_label}"
+            media_type_label = "видео" if primary_video_id else ("фото" if primary_photo_id else "материал")
+            action_label = f"новость{count_label}" if author else f"заметку с {media_type_label}{count_label}"
             try:
                 status_msg = await messages[0].answer(
                     f"⏳ <b>[1/3] Сохраняю {action_label}...</b>",
@@ -233,6 +241,7 @@ async def handle_media_upload(message: Message):
                 source=note_text,
                 content_type=ContentType.NOTE,
                 telegram_photo_id=primary_photo_id,
+                telegram_video_id=primary_video_id,
                 photo_ids=all_media_ids,
                 author=author,
             )
@@ -438,7 +447,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
     await session.commit()
     bookmark.is_read = new_status
 
-    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url) else 0
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
     if bookmark.photos_json:
         try:
             p_list = json.loads(bookmark.photos_json)
@@ -457,6 +466,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_pages,
         extra_data=extra_data,
         photo_count=photo_count,
+        is_note=(bookmark.content_type == ContentType.NOTE),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=False, page_info=page_info)
@@ -482,7 +492,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Закладка не найдена.", show_alert=True)
         return
 
-    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url) else 0
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
     if bookmark.photos_json:
         try:
             p_list = json.loads(bookmark.photos_json)
@@ -501,6 +511,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_pages,
         extra_data=extra_data,
         photo_count=photo_count,
+        is_note=(bookmark.content_type == ContentType.NOTE),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=showing_full_text, page_info=page_info)
@@ -525,7 +536,7 @@ async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
                 log.warning(f"Error removing vectors from Qdrant: {e}")
 
         msg = callback.message
-        if msg.photo:
+        if msg.photo or msg.video or msg.animation:
             try:
                 await msg.delete()
             except Exception:
