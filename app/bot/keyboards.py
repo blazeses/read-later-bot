@@ -10,20 +10,24 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
 def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Bottom persistent Reply Keyboard designed with Zero Guesswork principles."""
+    """Bottom Reply Keyboard: collapsible (non-persistent) with note upload and hide button."""
     builder = ReplyKeyboardBuilder()
     builder.row(
         KeyboardButton(text="📥 Мои закладки"),
         KeyboardButton(text="🔍 Поиск"),
     )
     builder.row(
+        KeyboardButton(text="➕ Загрузить заметку"),
         KeyboardButton(text="📊 Дайджест"),
-        KeyboardButton(text="⚙️ Настройки"),
     )
     builder.row(
+        KeyboardButton(text="⚙️ Настройки"),
         KeyboardButton(text="❓ Помощь"),
     )
-    return builder.as_markup(resize_keyboard=True, is_persistent=True)
+    builder.row(
+        KeyboardButton(text="🔽 Скрыть меню"),
+    )
+    return builder.as_markup(resize_keyboard=True, is_persistent=False)
 
 
 def make_safe_callback(prefix: str, *args) -> str:

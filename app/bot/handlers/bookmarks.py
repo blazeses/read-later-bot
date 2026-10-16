@@ -34,6 +34,8 @@ def set_ingest_service(service: IngestionQueueService):
 _media_groups: dict[str, list[Message]] = {}
 
 MENU_BUTTON_TEXTS = {
+    "➕ Загрузить заметку", "Загрузить заметку",
+    "➕ Добавить заметку", "Добавить заметку",
     "➕ Добавить статью", "Добавить статью",
     "📥 Мои закладки", "Мои закладки",
     "🔍 Поиск", "Поиск",

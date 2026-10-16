@@ -112,18 +112,38 @@ async def cb_demo_interactions(callback: CallbackQuery):
 async def cmd_menu(message: Message):
     text = (
         "📋 <b>Главное меню:</b>\n"
-        "Выберите действие ниже на кнопках клавиатуры."
+        "Выберите действие ниже на кнопках клавиатуры.\n"
+        "<i>(Панель можно свернуть кнопкой «🔽 Скрыть меню» или стрелкой клавиатуры)</i>"
     )
     await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+
+
+@router.message(Command("add"))
+@router.message(F.text.in_({
+    "➕ Загрузить заметку", "Загрузить заметку",
+    "➕ Добавить заметку", "Добавить заметку",
+    "➕ Добавить статью", "Добавить статью",
+}))
+async def btn_upload_note(message: Message):
+    text = (
+        "✍️ <b>Добавление новой заметки или материала:</b>\n\n"
+        "Вы можете отправить прямо сюда в чат:\n"
+        "• <b>Текст, мысль или цитату</b> — бот создаст заметку и подберёт теги\n"
+        "• <b>Фотографию с подписью</b> — сохранит изображение и текст\n"
+        "• <b>Ссылку на статью, YouTube или X</b> — скачает контент и сделает выжимку\n"
+        "• <b>Документ (PDF, DOCX)</b> — проиндексирует файл для поиска\n\n"
+        "👇 <i>Отправьте ссылку, текст или файл следующим сообщением!</i>"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("hide"))
 @router.message(F.text.in_({"🔽 Скрыть меню", "Скрыть меню", "Закрыть меню"}))
 async def cmd_hide_keyboard(message: Message):
     text = (
-        "⌨️ <b>Меню скрыто.</b>\n\n"
+        "⌨️ <b>Нижняя панель скрыта.</b>\n\n"
         "• Чтобы вернуть кнопки меню, отправьте команду /menu\n"
-        "• Все функции также доступны через кнопку <b>[/]</b> меню бота."
+        "• Также вы всегда можете использовать кнопку <b>[/]</b> в строке ввода."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove(), parse_mode="HTML")
 

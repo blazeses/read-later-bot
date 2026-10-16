@@ -116,19 +116,19 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
             photo_count=get_photo_count(b),
         )
 
+        await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
         try:
             await status_msg.delete()
         except Exception:
             pass
 
-        await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
-
     except Exception as e:
         log.exception(f"Error in execute_search for query '{query}': {e}")
+        err_hint = f" ({html.escape(str(e)[:80])})" if str(e) else ""
         try:
             await status_msg.edit_text(
-                f"⚠️ <b>Не удалось завершить поиск «{html.escape(clean_q)}»:</b>\n"
-                "Попробуйте уточнить запрос или выберите материалы из недавних:",
+                f"⚠️ <b>Не удалось завершить поиск «{html.escape(clean_q)}»{err_hint}:</b>\n\n"
+                "Попробуйте уточнить запрос или выберите материалы из разделов ниже:",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="🕒 Показать недавние", callback_data="rl:1")],
@@ -138,7 +138,10 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
                 parse_mode="HTML",
             )
         except Exception:
-            await message.answer("⚠️ Ошибка поиска. Вы можете открыть «Недавние» через меню внизу.")
+            await message.answer(
+                f"⚠️ Ошибка поиска{err_hint}. Вы можете открыть «Недавние» через меню внизу.",
+                parse_mode="HTML",
+            )
 
 
 @router.callback_query(F.data == "open_tags_menu")
@@ -188,6 +191,8 @@ async def cmd_search(message: Message, state: FSMContext, session: AsyncSession)
 async def process_search_query_state(message: Message, state: FSMContext, session: AsyncSession):
     text = (message.text or "").strip()
     if text.startswith("/") or text in {
+        "➕ Загрузить заметку", "Загрузить заметку",
+        "➕ Добавить заметку", "Добавить заметку",
         "➕ Добавить статью", "Добавить статью",
         "📥 Мои закладки", "Мои закладки",
         "🔍 Поиск", "Поиск",

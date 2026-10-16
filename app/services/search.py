@@ -74,14 +74,17 @@ class HybridSearchService:
             client = getattr(llm, "client", None)
             if client:
                 model = getattr(llm, "model", "deepseek-chat")
-                resp = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "You are a smart search assistant for bookmarks. Respond only in valid JSON."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.1,
+                resp = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": "You are a smart search assistant for bookmarks. Respond only in valid JSON."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.1,
+                    ),
+                    timeout=6.0,
                 )
                 raw_json = resp.choices[0].message.content or "{}"
                 data = json.loads(raw_json)
@@ -139,8 +142,8 @@ class HybridSearchService:
             ):
                 return []
             try:
-                q_vec = await self.embedding_provider.embed_query(clean_query)
-                return await self.vector_store.search(user_id=user_id, query_vector=q_vec, limit=40)
+                q_vec = await asyncio.wait_for(self.embedding_provider.embed_query(clean_query), timeout=3.0)
+                return await asyncio.wait_for(self.vector_store.search(user_id=user_id, query_vector=q_vec, limit=40), timeout=3.0)
             except Exception as e:
                 log.warning(f"Vector search failed: {e}")
                 return []

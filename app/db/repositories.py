@@ -97,6 +97,58 @@ class TagRepository:
         return list(result.all())
 
 
+def extract_search_terms(query: str) -> List[str]:
+    """
+    Extract meaningful search terms, typo variants, and word stems for Russian and English.
+    Handles grammatical inflections, typos (e.g. 'тарбрис' -> 'табрис'), and multi-word queries.
+    """
+    import re
+    cleaned = re.sub(r"[^\w\s-]", " ", query.lower()).strip()
+    raw_words = [w.strip() for w in cleaned.split() if len(w.strip()) >= 2]
+    if not raw_words:
+        return [query.strip().lower()] if query.strip() else []
+
+    terms = set()
+    ru_suffixes = (
+        "оваться", "иваться", "ываться", "ельного", "ельному",
+        "овать", "ивать", "ывать", "ение", "ения", "ению", "ениями",
+        "тель", "ость", "ости", "остью", "остях", "ями", "ами",
+        "ого", "его", "ому", "ему", "ыми", "ими", "ный", "ная", "ное",
+        "ные", "ных", "ным", "ном", "ную",
+        "ый", "ий", "ая", "яя", "ое", "ее", "ые", "ие",
+        "ам", "ям", "ом", "ем", "ой", "ей", "ах", "ях", "ов", "ев",
+        "ть", "ти", "ла", "ли", "ло", "ал", "ил", "ел",
+        "ую", "юю", "а", "е", "и", "о", "у", "ы", "э", "ю", "я", "ь"
+    )
+    en_suffixes = ("ation", "tions", "tion", "ing", "ies", "ed", "es", "s")
+
+    for w in raw_words:
+        terms.add(w)
+
+        # 1. 1-character deletion variants for typo tolerance (e.g. 'тарбрис' -> 'табрис')
+        if len(w) >= 4:
+            for i in range(len(w)):
+                typo_term = w[:i] + w[i + 1:]
+                if len(typo_term) >= 3:
+                    terms.add(typo_term)
+
+        # 2. Suffix stripping for Russian words
+        if len(w) >= 4:
+            stem_found = False
+            for suf in ru_suffixes:
+                if w.endswith(suf) and len(w) - len(suf) >= 3:
+                    terms.add(w[: len(w) - len(suf)])
+                    stem_found = True
+                    break
+            if not stem_found:
+                for suf in en_suffixes:
+                    if w.endswith(suf) and len(w) - len(suf) >= 3:
+                        terms.add(w[: len(w) - len(suf)])
+                        break
+
+    return [t for t in terms if len(t) >= 2]
+
+
 class BookmarkRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -328,57 +380,6 @@ class BookmarkRepository:
             "tags_count": tags_count,
         }
 
-def extract_search_terms(query: str) -> List[str]:
-    """
-    Extract meaningful search terms, typo variants, and word stems for Russian and English.
-    Handles grammatical inflections, typos (e.g. 'тарбрис' -> 'табрис'), and multi-word queries.
-    """
-    import re
-    cleaned = re.sub(r"[^\w\s-]", " ", query.lower()).strip()
-    raw_words = [w.strip() for w in cleaned.split() if len(w.strip()) >= 2]
-    if not raw_words:
-        return [query.strip().lower()] if query.strip() else []
-
-    terms = set()
-    ru_suffixes = (
-        "оваться", "иваться", "ываться", "ельного", "ельному",
-        "овать", "ивать", "ывать", "ение", "ения", "ению", "ениями",
-        "тель", "ость", "ости", "остью", "остях", "ями", "ами",
-        "ого", "его", "ому", "ему", "ыми", "ими", "ный", "ная", "ное",
-        "ные", "ных", "ным", "ном", "ную",
-        "ый", "ий", "ая", "яя", "ое", "ее", "ые", "ие",
-        "ам", "ям", "ом", "ем", "ой", "ей", "ах", "ях", "ов", "ев",
-        "ть", "ти", "ла", "ли", "ло", "ал", "ил", "ел",
-        "ую", "юю", "а", "е", "и", "о", "у", "ы", "э", "ю", "я", "ь"
-    )
-    en_suffixes = ("ation", "tions", "tion", "ing", "ies", "ed", "es", "s")
-
-    for w in raw_words:
-        terms.add(w)
-
-        # 1. 1-character deletion variants for typo tolerance (e.g. 'тарбрис' -> 'табрис')
-        if len(w) >= 4:
-            for i in range(len(w)):
-                typo_term = w[:i] + w[i + 1:]
-                if len(typo_term) >= 3:
-                    terms.add(typo_term)
-
-        # 2. Suffix stripping for Russian words
-        if len(w) >= 4:
-            stem_found = False
-            for suf in ru_suffixes:
-                if w.endswith(suf) and len(w) - len(suf) >= 3:
-                    terms.add(w[: len(w) - len(suf)])
-                    stem_found = True
-                    break
-            if not stem_found:
-                for suf in en_suffixes:
-                    if w.endswith(suf) and len(w) - len(suf) >= 3:
-                        terms.add(w[: len(w) - len(suf)])
-                        break
-
-    return [t for t in terms if len(t) >= 2]
-
     async def fulltext_search(
         self,
         user_id: int,
@@ -393,12 +394,73 @@ def extract_search_terms(query: str) -> List[str]:
         import re
         from app.core.logger import log
 
+        clean_q = query.strip()
+        if not clean_q:
+            return []
+
         results_map: Dict[uuid.UUID, Tuple[Bookmark, float]] = {}
 
-        # 1. Try PostgreSQL native full-text search with dynamic to_tsvector inside a nested savepoint
+        # 1. Direct SQL keyword search (fast, reliable, covers title, user_comment, summary, domain, author, tags)
+        terms = extract_search_terms(clean_q)
+        if not terms:
+            terms = [clean_q.lower()]
+
         try:
             async with self.session.begin_nested():
-                ts_query = func.plainto_tsquery("russian", query)
+                term_conditions = []
+                for t in terms:
+                    term_pattern = f"%{t}%"
+                    term_conditions.append(
+                        or_(
+                            Bookmark.title.ilike(term_pattern),
+                            Bookmark.user_comment.ilike(term_pattern),
+                            Bookmark.summary.ilike(term_pattern),
+                            Bookmark.full_text.ilike(term_pattern),
+                            Bookmark.domain.ilike(term_pattern),
+                            Bookmark.author.ilike(term_pattern),
+                            Bookmark.tags.any(Tag.name.ilike(term_pattern)),
+                        )
+                    )
+
+                stmt = (
+                    select(Bookmark)
+                    .options(selectinload(Bookmark.tags))
+                    .where(and_(Bookmark.user_id == user_id, or_(*term_conditions)))
+                    .order_by(Bookmark.created_at.desc())
+                    .limit(limit * 2)
+                )
+                res = await self.session.execute(stmt)
+                for bm in res.scalars().all():
+                    score = 10.0
+                    t_lower = (bm.title or "").lower()
+                    c_lower = (bm.user_comment or "").lower()
+                    s_lower = (bm.summary or "").lower()
+                    f_lower = (bm.full_text or "").lower()
+                    tags_lower = [tag.name.lower() for tag in bm.tags]
+
+                    q_lower = clean_q.lower()
+                    if q_lower in t_lower or q_lower in c_lower or any(q_lower in tag for tag in tags_lower):
+                        score += 30.0
+                    if q_lower in s_lower or q_lower in f_lower:
+                        score += 15.0
+
+                    for t in terms:
+                        if t in t_lower or t in c_lower:
+                            score += 8.0
+                        if any(t in tag for tag in tags_lower):
+                            score += 8.0
+                        if t in s_lower or t in f_lower:
+                            score += 4.0
+                        score += 1.0
+
+                    results_map[bm.id] = (bm, score)
+        except Exception as term_err:
+            log.warning(f"Direct term search failed: {term_err}")
+
+        # 2. PostgreSQL tsvector search (bonus ranking if available)
+        try:
+            async with self.session.begin_nested():
+                ts_query = func.plainto_tsquery("russian", clean_q)
                 combined_text = func.concat(
                     func.coalesce(Bookmark.title, ""),
                     " ",
@@ -422,109 +484,52 @@ def extract_search_terms(query: str) -> List[str]:
                 res = await self.session.execute(stmt)
                 for row in res.all():
                     bm = row[0]
-                    r_score = float(row[1]) + 2.0
-                    results_map[bm.id] = (bm, r_score)
+                    r_score = float(row[1]) + 20.0
+                    if bm.id in results_map:
+                        old_bm, old_score = results_map[bm.id]
+                        results_map[bm.id] = (bm, old_score + r_score)
+                    else:
+                        results_map[bm.id] = (bm, r_score)
         except Exception as pg_err:
             log.debug(f"PostgreSQL plainto_tsquery skipped: {pg_err}")
 
-        # 2. Multi-field term and typo-variant search (handles 'тарбрис' -> 'табрис', inflections & tags)
-        terms = extract_search_terms(query)
-        if terms:
-            term_conditions = []
-            for t in terms:
-                term_pattern = f"%{t}%"
-                term_conditions.append(
-                    or_(
-                        Bookmark.title.ilike(term_pattern),
-                        Bookmark.summary.ilike(term_pattern),
-                        Bookmark.full_text.ilike(term_pattern),
-                        Bookmark.domain.ilike(term_pattern),
-                        Bookmark.author.ilike(term_pattern),
-                        Bookmark.user_comment.ilike(term_pattern),
-                        Bookmark.tags.any(Tag.name.ilike(term_pattern)),
-                    )
-                )
-
-            stmt = (
-                select(Bookmark)
-                .options(selectinload(Bookmark.tags))
-                .where(and_(Bookmark.user_id == user_id, or_(*term_conditions)))
-                .order_by(Bookmark.created_at.desc())
-                .limit(limit * 2)
-            )
-            try:
-                res = await self.session.execute(stmt)
-                for bm in res.scalars().all():
-                    score = 0.0
-                    t_lower = (bm.title or "").lower()
-                    s_lower = (bm.summary or "").lower()
-                    f_lower = (bm.full_text or "").lower()
-                    c_lower = (bm.user_comment or "").lower()
-                    d_lower = (bm.domain or "").lower()
-                    a_lower = (bm.author or "").lower()
-                    tags_lower = [tag.name.lower() for tag in bm.tags]
-
-                    q_lower = query.lower().strip()
-                    if q_lower in t_lower or q_lower in c_lower or any(q_lower in tag for tag in tags_lower):
-                        score += 25.0
-                    if q_lower in s_lower or q_lower in f_lower:
-                        score += 15.0
-
-                    for t in terms:
-                        if t in t_lower or t in c_lower:
-                            score += 8.0
-                        if any(t in tag for tag in tags_lower):
-                            score += 6.0
-                        if t in s_lower or t in f_lower:
-                            score += 4.0
-                        if t in d_lower or t in a_lower:
-                            score += 3.0
-                        score += 1.0
-
-                    if bm.id in results_map:
-                        old_bm, old_score = results_map[bm.id]
-                        results_map[bm.id] = (bm, old_score + score)
-                    else:
-                        results_map[bm.id] = (bm, score)
-            except Exception as term_err:
-                log.warning(f"Term search query failed: {term_err}")
-
-        # 3. Fuzzy typo matching fallback across user's bookmarks (e.g. 'тарбрис' <-> 'табрис', 92% similarity)
-        q_words = [w for w in re.split(r"\W+", query.lower()) if len(w) >= 2]
+        # 3. Fuzzy typo matching across user's bookmarks (handles 'тарбрис' <-> 'табрис', >0.72 similarity)
+        q_words = [w for w in re.split(r"\W+", clean_q.lower()) if len(w) >= 2]
         if q_words:
             try:
-                stmt_all = (
-                    select(Bookmark)
-                    .options(selectinload(Bookmark.tags))
-                    .where(Bookmark.user_id == user_id)
-                    .order_by(Bookmark.created_at.desc())
-                    .limit(60)
-                )
-                res_all = await self.session.execute(stmt_all)
-                for bm in res_all.scalars().all():
-                    text_parts = [
-                        bm.title or "",
-                        bm.user_comment or "",
-                        bm.summary or "",
-                        (bm.full_text or "")[:400],
-                        bm.domain or "",
-                        " ".join(t.name for t in bm.tags),
-                    ]
-                    combined_words = [w for w in re.split(r"\W+", " ".join(text_parts).lower()) if len(w) >= 2]
-                    best_ratio = 0.0
-                    for qw in q_words:
-                        for bw in combined_words:
-                            ratio = difflib.SequenceMatcher(None, qw, bw).ratio()
-                            if ratio > best_ratio:
-                                best_ratio = ratio
+                async with self.session.begin_nested():
+                    stmt_all = (
+                        select(Bookmark)
+                        .options(selectinload(Bookmark.tags))
+                        .where(Bookmark.user_id == user_id)
+                        .order_by(Bookmark.created_at.desc())
+                        .limit(60)
+                    )
+                    res_all = await self.session.execute(stmt_all)
+                    for bm in res_all.scalars().all():
+                        text_parts = [
+                            bm.title or "",
+                            bm.user_comment or "",
+                            bm.summary or "",
+                            (bm.full_text or "")[:400],
+                            bm.domain or "",
+                            " ".join(t.name for t in bm.tags),
+                        ]
+                        combined_words = [w for w in re.split(r"\W+", " ".join(text_parts).lower()) if len(w) >= 2]
+                        best_ratio = 0.0
+                        for qw in q_words:
+                            for bw in combined_words:
+                                ratio = difflib.SequenceMatcher(None, qw, bw).ratio()
+                                if ratio > best_ratio:
+                                    best_ratio = ratio
 
-                    if best_ratio >= 0.72:
-                        fuzzy_score = 15.0 * best_ratio
-                        if bm.id in results_map:
-                            old_bm, old_score = results_map[bm.id]
-                            results_map[bm.id] = (bm, max(old_score, fuzzy_score))
-                        else:
-                            results_map[bm.id] = (bm, fuzzy_score)
+                        if best_ratio >= 0.72:
+                            fuzzy_score = 15.0 * best_ratio
+                            if bm.id in results_map:
+                                old_bm, old_score = results_map[bm.id]
+                                results_map[bm.id] = (bm, max(old_score, fuzzy_score + 10.0))
+                            else:
+                                results_map[bm.id] = (bm, fuzzy_score)
             except Exception as fuzzy_err:
                 log.warning(f"Fuzzy bookmark matching skipped: {fuzzy_err}")
 
