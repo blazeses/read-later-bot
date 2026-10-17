@@ -34,12 +34,23 @@ class ContentExtractorRegistry:
         telegram_photo_id: Optional[str] = None,
         telegram_video_id: Optional[str] = None,
         author: Optional[str] = None,
+        url: Optional[str] = None,
     ) -> ExtractedContent:
+        from urllib.parse import urlparse
         lines = [line.strip() for line in text.split("\n") if line.strip()]
         default_label = "Видео-заметка" if telegram_video_id else ("Фото-заметка" if telegram_photo_id else "Заметка")
         title = lines[0][:80] if lines else default_label
         if len(title) == 80:
             title += "..."
+
+        domain = "telegram" if author else "note"
+        if url:
+            try:
+                parsed_dom = urlparse(url).netloc
+                if parsed_dom:
+                    domain = parsed_dom
+            except Exception:
+                pass
 
         return ExtractedContent(
             title=title,
@@ -47,9 +58,9 @@ class ContentExtractorRegistry:
             date=None,
             text=text,
             language=None,
-            domain="telegram" if author else "note",
+            domain=domain,
             content_type=ContentType.NOTE,
-            url=None,
+            url=url,
             success=True,
             telegram_photo_id=telegram_photo_id,
             telegram_video_id=telegram_video_id,

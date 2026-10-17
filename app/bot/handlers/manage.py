@@ -157,7 +157,7 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             current_page=current_page,
             total_pages=1,
             photo_count=get_photo_count(bookmark),
-            is_note=(bookmark.content_type == ContentType.NOTE),
+            is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
             is_fav=is_fav,
         )
         await update_card_message(callback, bookmark, kb, showing_full_text=True)
@@ -242,7 +242,7 @@ async def cmd_random(message: Message, session: AsyncSession):
         showing_full_text=True,
         nav_prefix="random",
         photo_count=get_photo_count(bookmark),
-        is_note=(bookmark.content_type == ContentType.NOTE),
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
     )
     await send_card_message(message, message.chat.id, bookmark, kb, showing_full_text=True)
@@ -273,7 +273,7 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
         showing_full_text=True,
         nav_prefix="random",
         photo_count=get_photo_count(bookmark),
-        is_note=(bookmark.content_type == ContentType.NOTE),
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
     )
     await update_card_message(callback, bookmark, kb, showing_full_text=True)
@@ -329,7 +329,7 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         total_pages=total,
         extra_data=tag_name,
         photo_count=get_photo_count(b),
-        is_note=(b.content_type == ContentType.NOTE),
+        is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
         is_fav=is_fav,
     )
 

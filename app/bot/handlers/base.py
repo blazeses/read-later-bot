@@ -85,6 +85,7 @@ async def cb_show_onboarding_help(callback: CallbackQuery):
         "• <b>Видео YouTube</b> — скачивает субтитры и делает выжимку содержания.\n"
         "• <b>Посты X (Twitter)</b> — сохраняет текст твита и прикрепленные фото.\n"
         "• <b>Документы (PDF, DOCX)</b> — индексирует текст для быстрого поиска.\n"
+        "• <b>Еженедельный дайджест</b> — по понедельникам напоминает о 3 отложенных материалах (/digest).\n"
         "• <b>Инлайн-режим</b> — пишите <code>@bot_name запрос</code> прямо в любом чате, чтобы поделиться закладкой!\n"
         "• <b>Экспорт</b> — выгружайте базу в Obsidian Markdown, CSV или JSON через команду /export."
     )
@@ -164,8 +165,9 @@ async def btn_settings(message: Message, session: AsyncSession):
 
     text = (
         "⚙️ <b>Настройки вашего профиля:</b>\n\n"
-        f"• Еженедельный дайджест: <b>{d_status}</b>\n"
-        "• Инлайн-режим: <b>активен</b> (вводите @имя_бота в любом диалоге)\n\n"
+        f"• ☕️ <b>Еженедельный дайджест:</b> <b>{d_status}</b>\n"
+        "  <i>Каждый понедельник бот присылает подборку из 3 непрочитанных материалов со ссылками, тегами и временем на чтение, помогая разбирать сохранённое.</i>\n\n"
+        "• 🔍 <b>Инлайн-режим:</b> активен (вводите <code>@имя_бота</code> в любом диалоге для быстрой отправки закладок)\n\n"
         "Вы можете переключить статус дайджеста кнопкой ниже или выгрузить данные:"
     )
     kb = InlineKeyboardMarkup(
@@ -183,10 +185,19 @@ async def cb_toggle_digest_btn(callback: CallbackQuery, session: AsyncSession):
     new_state = await user_repo.toggle_digest(callback.from_user.id)
     await session.commit()
     d_status = "включен ✅" if new_state else "выключен ⏸"
-    await callback.answer(f"Дайджест теперь {d_status}!")
+    desc = (
+        "Каждый понедельник бот пришлёт 3 непрочитанных материала"
+        if new_state
+        else "Рассылка напоминаний приостановлена"
+    )
+    await callback.answer(f"Дайджест {d_status}!")
     try:
         await callback.message.edit_text(
-            f"⚙️ <b>Настройки обновлены:</b>\n\n• Еженедельный дайджест: <b>{d_status}</b>",
+            f"⚙️ <b>Настройки обновлены:</b>\n\n"
+            f"• ☕️ <b>Еженедельный дайджест:</b> <b>{d_status}</b>\n"
+            f"  <i>{desc}.</i>\n\n"
+            "• 🔍 <b>Инлайн-режим:</b> активен (вводите <code>@имя_бота</code> в любом чате)\n\n"
+            "Вы можете переключить статус дайджеста кнопкой ниже или выгрузить данные:",
             reply_markup=callback.message.reply_markup,
             parse_mode="HTML",
         )
@@ -206,8 +217,21 @@ async def cmd_toggle_digest(message: Message, session: AsyncSession):
     user_repo = UserRepository(session)
     new_state = await user_repo.toggle_digest(message.from_user.id)
     await session.commit()
-    status_str = "включен ✅ (рассылка каждый понедельник)" if new_state else "выключен ⏸"
-    await message.answer(f"☕️ Еженедельный дайджест <b>{status_str}</b>.", reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+    if new_state:
+        msg = (
+            "☕️ <b>Еженедельный дайджест включен ✅</b>\n\n"
+            "<b>Что это такое?</b>\n"
+            "Каждый понедельник бот находит в вашей базе до <b>3 самых давних непрочитанных материалов</b> "
+            "и присылает удобную подборку со ссылками, тегами и временем на чтение.\n\n"
+            "Это помогает не забывать об отложенных статьях и заметках.\n\n"
+            "<i>Если непрочитанных материалов нет, бот не будет вас беспокоить. Отключить дайджест можно в любой момент командой /digest или в /settings.</i>"
+        )
+    else:
+        msg = (
+            "☕️ <b>Еженедельный дайджест выключен ⏸</b>\n\n"
+            "Бот больше не будет присылать напоминания по понедельникам. Включить обратно можно в любой момент этой же командой /digest или через /settings."
+        )
+    await message.answer(msg, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
 @router.message(F.text.in_({"❓ Помощь", "Помощь"}))
@@ -219,6 +243,7 @@ async def cmd_help(message: Message):
         "🔍 <code>/search &lt;запрос&gt;</code> — умный семантический поиск\n"
         "🎲 <code>/random</code> — случайный непрочитанный материал\n"
         "🏷 <code>/tags</code> — просмотр и фильтрация по тегам\n"
+        "☕️ <code>/digest</code> — еженедельный дайджест 3 непрочитанных закладок\n"
         "📊 <code>/stats</code> — статистика вашей базы знаний\n"
         "💾 <code>/export</code> — выгрузка в Markdown (Obsidian), CSV или JSON\n"
         "📱 <code>/menu</code> — показать кнопки главного меню\n"

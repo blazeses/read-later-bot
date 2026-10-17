@@ -117,7 +117,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
             total_pages=total_count,
             extra_data=token,
             photo_count=get_photo_count(b),
-            is_note=(b.content_type == ContentType.NOTE),
+            is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
             is_fav=is_fav,
         )
 
@@ -272,7 +272,7 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_count,
         extra_data=token,
         photo_count=get_photo_count(b),
-        is_note=(b.content_type == ContentType.NOTE),
+        is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
         is_fav=is_fav,
     )
     await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total_count))

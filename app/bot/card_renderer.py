@@ -54,14 +54,9 @@ def build_card_text(
         except Exception:
             pass
 
-    comment_block = ""
-    if bookmark.user_comment and bookmark.user_comment.strip():
-        comment_clean = html.escape(bookmark.user_comment.strip())
-        comment_block = f"💭 <b>Комментарий:</b>\n<i>{comment_clean}</i>\n\n"
-
     # ДЛЯ ЗАМЕТОК: оригинальный текст пользователя 1:1, без перевода, сокращений и правок
     if bookmark.content_type == ContentType.NOTE:
-        note_body = (bookmark.full_text or bookmark.summary or "").strip()
+        note_body = (bookmark.full_text or bookmark.summary or bookmark.user_comment or "").strip()
         title_raw = (bookmark.title or "").strip()
         # Если заголовок совпадает с текстом или его началом, не дублируем его
         show_title = bool(title_raw and not note_body.startswith(title_raw.rstrip(".")))
@@ -78,7 +73,6 @@ def build_card_text(
             f"{meta_line}\n"
             f"{title_block}"
             f"Статус: {status_icon} | {tags_str}\n\n"
-            f"{comment_block}"
             f"{content_block}"
         )
     else:
@@ -86,34 +80,59 @@ def build_card_text(
         if for_caption and len(title_clean) > 160:
             title_clean = title_clean[:160] + "..."
 
-        # ПО УМОЛЧАНИЮ: сразу показываем содержание сохраненного материала!
-        if showing_full_text:
-            body = (bookmark.full_text or bookmark.summary or "").strip()
-            if not body:
-                content_block = "📄 <b>Содержание:</b>\n<i>Содержимое пусто или недоступно.</i>"
-            else:
-                limit = 650 if for_caption else 3300
-                if len(body) > limit:
-                    body = body[:limit] + "...\n\n<i>(показана основная часть)</i>"
-                content_block = f"📄 <b>Содержание:</b>\n{html.escape(body)}"
-        else:
-            summary = (bookmark.summary or "").strip()
-            if not summary:
-                content_block = "💡 <b>Краткая суть:</b>\n<i>Краткая выжимка отсутствует.</i>"
-            else:
-                limit = 650 if for_caption else 2500
-                if len(summary) > limit:
-                    summary = summary[:limit] + "..."
-                content_block = f"💡 <b>Краткая суть:</b>\n{html.escape(summary)}"
+        # Если у материала есть комментарий пользователя / сохраненный текст поста:
+        # показываем именно заметку пользователя, а не простыню спарсенного ИИ текста!
+        if bookmark.user_comment and bookmark.user_comment.strip():
+            comment_body = bookmark.user_comment.strip()
+            limit = 650 if for_caption else 3300
+            if len(comment_body) > limit:
+                comment_body = comment_body[:limit] + "..."
 
-        res = (
-            f"{header}"
-            f"{meta_line}\n"
-            f"📌 <b>{title_clean}</b>\n\n"
-            f"Статус: {status_icon} | {tags_str}\n\n"
-            f"{comment_block}"
-            f"{content_block}"
-        )
+            if showing_full_text:
+                content_block = f"💬 <b>Заметка:</b>\n{html.escape(comment_body)}"
+            else:
+                summary = (bookmark.summary or "").strip()
+                if not summary:
+                    summary = (bookmark.full_text or "").strip()
+                if len(summary) > (650 if for_caption else 2500):
+                    summary = summary[:(650 if for_caption else 2500)] + "..."
+                content_block = f"💡 <b>Краткая суть статьи:</b>\n{html.escape(summary)}" if summary else f"💬 <b>Заметка:</b>\n{html.escape(comment_body)}"
+
+            res = (
+                f"{header}"
+                f"{meta_line}\n"
+                f"📌 <b>{title_clean}</b>\n\n"
+                f"Статус: {status_icon} | {tags_str}\n\n"
+                f"{content_block}"
+            )
+        else:
+            # Обычная статья по ссылке без комментария
+            if showing_full_text:
+                body = (bookmark.full_text or bookmark.summary or "").strip()
+                if not body:
+                    content_block = "📄 <b>Содержание:</b>\n<i>Содержимое пусто или недоступно.</i>"
+                else:
+                    limit = 650 if for_caption else 3300
+                    if len(body) > limit:
+                        body = body[:limit] + "...\n\n<i>(показана основная часть)</i>"
+                    content_block = f"📄 <b>Содержание:</b>\n{html.escape(body)}"
+            else:
+                summary = (bookmark.summary or "").strip()
+                if not summary:
+                    content_block = "💡 <b>Краткая суть:</b>\n<i>Краткая выжимка отсутствует.</i>"
+                else:
+                    limit = 650 if for_caption else 2500
+                    if len(summary) > limit:
+                        summary = summary[:limit] + "..."
+                    content_block = f"💡 <b>Краткая суть:</b>\n{html.escape(summary)}"
+
+            res = (
+                f"{header}"
+                f"{meta_line}\n"
+                f"📌 <b>{title_clean}</b>\n\n"
+                f"Статус: {status_icon} | {tags_str}\n\n"
+                f"{content_block}"
+            )
 
     return res
 

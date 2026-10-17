@@ -40,6 +40,7 @@ class IngestTask:
     telegram_video_id: Optional[str] = None
     photo_ids: Optional[list[str]] = None
     author: Optional[str] = None
+    url: Optional[str] = None
 
 
 class IngestionQueueService:
@@ -163,6 +164,7 @@ class IngestionQueueService:
                         telegram_photo_id=task.telegram_photo_id,
                         telegram_video_id=task.telegram_video_id,
                         author=task.author,
+                        url=task.url,
                     )
                 else:
                     extracted = await extractor_registry.extract_url(task.source)
@@ -298,7 +300,7 @@ class IngestionQueueService:
                 from app.bot.keyboards import get_bookmark_card_keyboard
 
                 photo_count = len(task.photo_ids) if task.photo_ids else (1 if (bookmark.telegram_photo_id or bookmark.image_url or bookmark.telegram_video_id) else 0)
-                is_note = (bookmark.content_type == ContentType.NOTE)
+                is_note = (bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip()))
                 is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
                 kb = get_bookmark_card_keyboard(
                     bookmark.id,

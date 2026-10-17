@@ -88,13 +88,35 @@ async def handle_text_or_urls(message: Message):
         urls = extract_urls(text, message.entities)
         author = extract_forward_author(message)
 
-        # 1. Ссылки в сообщении (прямые или гиперссылки)
-        if urls:
-            user_comment = text
-            for u in urls:
-                user_comment = user_comment.replace(u, "").strip()
-            user_comment = user_comment if user_comment else None
+        # Вычисляем текст без ссылок
+        non_url_text = text
+        for u in urls:
+            non_url_text = non_url_text.replace(u, "").strip()
 
+        # 1. Если сообщение содержит текст поста/заметки вместе со ссылкой (или пост переслан из канала/чата)
+        # -> это ЗАМЕТКА пользователя/канала со ссылкой на источник! Сохраняем оригинальный текст 1:1 без парсинга статьи!
+        if urls and (len(non_url_text) >= 15 or author):
+            action_label = f"пост из «{html.escape(author)}»" if author else "заметку"
+            try:
+                status_msg = await message.answer(f"⏳ <b>[1/3] Сохраняю {action_label}...</b>", parse_mode="HTML")
+            except Exception:
+                status_msg = await message.answer("⏳ [1/3] Сохраняю материал...")
+
+            task = IngestTask(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                status_message_id=status_msg.message_id,
+                source=text,
+                content_type=ContentType.NOTE,
+                url=urls[0],
+                user_comment=None,
+                author=author,
+            )
+            await ingest_service.enqueue(task)
+
+        # 2. Если это чистая ссылка (или ссылка с короткой пометкой < 15 символов) -> веб-материал
+        elif urls:
+            user_comment = non_url_text if non_url_text else None
             for url in urls:
                 if TWITTER_URL_REGEX.search(url):
                     c_type = ContentType.TWEET
@@ -120,7 +142,7 @@ async def handle_text_or_urls(message: Message):
                 )
                 await ingest_service.enqueue(task)
 
-        # 2. Обычный текст / новость без ссылок -> заметка / новость
+        # 3. Обычный текст / новость без ссылок -> заметка / новость
         else:
             action_label = f"новость из «{html.escape(author)}»" if author else "заметку"
             try:
@@ -195,33 +217,13 @@ async def handle_media_upload(message: Message):
 
         urls = extract_urls(caption, caption_entities)
         count_label = f" ({len(photo_ids)} фото)" if len(photo_ids) > 1 else ""
+        non_url_caption = caption
+        for u in urls:
+            non_url_caption = non_url_caption.replace(u, "").strip()
 
-        if urls:
-            url = urls[0]
-            user_comment = caption.replace(url, "").strip() or None
-            safe_url = html.escape(url)
-            try:
-                status_msg = await messages[0].answer(
-                    f"⏳ <b>[1/3] Сохраняю статью{count_label}:</b> <i>{safe_url}</i>...",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                status_msg = await messages[0].answer(f"⏳ [1/3] Сохраняю статью{count_label}: {url}...")
-
-            task = IngestTask(
-                user_id=messages[0].from_user.id,
-                chat_id=messages[0].chat.id,
-                status_message_id=status_msg.message_id,
-                source=url,
-                content_type=ContentType.ARTICLE,
-                user_comment=user_comment,
-                telegram_photo_id=primary_photo_id,
-                telegram_video_id=primary_video_id,
-                photo_ids=all_media_ids,
-                author=author,
-            )
-            await ingest_service.enqueue(task)
-        else:
+        # Если к медиафайлу есть подпись (с ссылкой или без) или это пересланный пост ->
+        # это ВСЕГДА заметка с прикрепленным медиафайлом (фото/видео)! Текст подписи сохраняется 1:1!
+        if not urls or len(non_url_caption) >= 15 or author or not caption:
             default_label = "Видео-заметка" if primary_video_id else "Фото-заметка"
             note_text = caption if caption else f"{default_label} из Telegram"
             media_type_label = "видео" if primary_video_id else ("фото" if primary_photo_id else "материал")
@@ -240,6 +242,34 @@ async def handle_media_upload(message: Message):
                 status_message_id=status_msg.message_id,
                 source=note_text,
                 content_type=ContentType.NOTE,
+                url=urls[0] if urls else None,
+                user_comment=None,
+                telegram_photo_id=primary_photo_id,
+                telegram_video_id=primary_video_id,
+                photo_ids=all_media_ids,
+                author=author,
+            )
+            await ingest_service.enqueue(task)
+        else:
+            # Подпись состоит исключительно из одной ссылки без текста поста -> парсим статью с превью
+            url = urls[0]
+            user_comment = non_url_caption if non_url_caption else None
+            safe_url = html.escape(url)
+            try:
+                status_msg = await messages[0].answer(
+                    f"⏳ <b>[1/3] Сохраняю статью{count_label}:</b> <i>{safe_url}</i>...",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                status_msg = await messages[0].answer(f"⏳ [1/3] Сохраняю статью{count_label}: {url}...")
+
+            task = IngestTask(
+                user_id=messages[0].from_user.id,
+                chat_id=messages[0].chat.id,
+                status_message_id=status_msg.message_id,
+                source=url,
+                content_type=ContentType.ARTICLE,
+                user_comment=user_comment,
                 telegram_photo_id=primary_photo_id,
                 telegram_video_id=primary_video_id,
                 photo_ids=all_media_ids,
@@ -386,7 +416,7 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_pages,
         extra_data=extra_data,
         photo_count=photo_count,
-        is_note=(bookmark.content_type == ContentType.NOTE),
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
@@ -502,7 +532,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_pages,
         extra_data=extra_data,
         photo_count=photo_count,
-        is_note=(bookmark.content_type == ContentType.NOTE),
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
@@ -549,7 +579,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         total_pages=total_pages,
         extra_data=extra_data,
         photo_count=photo_count,
-        is_note=(bookmark.content_type == ContentType.NOTE),
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
