@@ -210,7 +210,7 @@ class IngestionQueueService:
                 # Progress State 2: ИИ-анализ
                 await self._safe_edit_status(
                     task.chat_id, task.status_message_id,
-                    "🧠 <b>[2/3] DeepSeek анализирует материал и формирует саммари...</b>"
+                    "🧠 <b>[2/3] Обрабатываю материал и подбираю теги...</b>"
                 )
 
                 # 3. LLM Обогащение (для статей - саммари и теги; для заметок - сохранение 1:1 без перевода и правок)
@@ -299,12 +299,15 @@ class IngestionQueueService:
 
                 photo_count = len(task.photo_ids) if task.photo_ids else (1 if (bookmark.telegram_photo_id or bookmark.image_url or bookmark.telegram_video_id) else 0)
                 is_note = (bookmark.content_type == ContentType.NOTE)
+                is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
                 kb = get_bookmark_card_keyboard(
                     bookmark.id,
                     url=bookmark.url,
                     is_read=bookmark.is_read,
+                    showing_full_text=True,
                     photo_count=photo_count,
                     is_note=is_note,
+                    is_fav=is_fav,
                 )
 
                 try:
@@ -312,7 +315,7 @@ class IngestionQueueService:
                 except Exception:
                     pass
 
-                await send_card_message(self.bot, task.chat_id, bookmark, kb)
+                await send_card_message(self.bot, task.chat_id, bookmark, kb, showing_full_text=True)
                 self.failed_tasks.pop(task.status_message_id, None)
 
             except Exception as e:

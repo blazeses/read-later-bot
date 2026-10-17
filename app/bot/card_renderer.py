@@ -26,7 +26,7 @@ def strip_html_tags(text: str) -> str:
 
 def build_card_text(
     bookmark: Bookmark,
-    showing_full_text: bool = False,
+    showing_full_text: bool = True,
     page_info: Optional[Tuple[int, int]] = None,
     for_caption: bool = False,
 ) -> str:
@@ -67,7 +67,7 @@ def build_card_text(
         show_title = bool(title_raw and not note_body.startswith(title_raw.rstrip(".")))
         title_block = f"📌 <b>{html.escape(title_raw)}</b>\n\n" if show_title else ""
 
-        limit = 750 if for_caption else 3500
+        limit = 650 if for_caption else 3300
         if len(note_body) > limit:
             note_body = note_body[:limit] + "..."
 
@@ -86,15 +86,16 @@ def build_card_text(
         if for_caption and len(title_clean) > 160:
             title_clean = title_clean[:160] + "..."
 
+        # ПО УМОЛЧАНИЮ: сразу показываем содержание сохраненного материала!
         if showing_full_text:
-            body = (bookmark.full_text or "").strip()
+            body = (bookmark.full_text or bookmark.summary or "").strip()
             if not body:
-                content_block = "📄 <b>Полный текст:</b>\n<i>Текст недоступен или пуст.</i>"
+                content_block = "📄 <b>Содержание:</b>\n<i>Содержимое пусто или недоступно.</i>"
             else:
-                limit = 600 if for_caption else 2800
+                limit = 650 if for_caption else 3300
                 if len(body) > limit:
-                    body = body[:limit] + "...\n\n<i>(текст сокращен)</i>"
-                content_block = f"📄 <b>Полный текст:</b>\n{html.escape(body)}"
+                    body = body[:limit] + "...\n\n<i>(показана основная часть)</i>"
+                content_block = f"📄 <b>Содержание:</b>\n{html.escape(body)}"
         else:
             summary = (bookmark.summary or "").strip()
             if not summary:
@@ -114,11 +115,6 @@ def build_card_text(
             f"{content_block}"
         )
 
-    if for_caption and len(res) > 1024:
-        res = res[:1015] + "..."
-    elif not for_caption and len(res) > 4096:
-        res = res[:4080] + "..."
-
     return res
 
 
@@ -127,7 +123,7 @@ async def send_card_message(
     chat_id: int,
     bookmark: Bookmark,
     reply_markup: InlineKeyboardMarkup,
-    showing_full_text: bool = False,
+    showing_full_text: bool = True,
     page_info: Optional[Tuple[int, int]] = None,
 ) -> Message:
     bot = bot_or_message if hasattr(bot_or_message, "send_message") else bot_or_message.bot
@@ -212,7 +208,7 @@ async def update_card_message(
     callback: CallbackQuery,
     bookmark: Bookmark,
     reply_markup: InlineKeyboardMarkup,
-    showing_full_text: bool = False,
+    showing_full_text: bool = True,
     page_info: Optional[Tuple[int, int]] = None,
 ):
     video_source = getattr(bookmark, "telegram_video_id", None)

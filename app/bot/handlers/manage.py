@@ -118,7 +118,7 @@ async def cb_recent_list(callback: CallbackQuery, session: AsyncSession):
     text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_unread_only=False)
     kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="rl")
 
-    if callback.message.photo:
+    if callback.message.photo or callback.message.video or callback.message.animation:
         try:
             await callback.message.delete()
         except Exception:
@@ -147,17 +147,20 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             await callback.answer("Закладка не найдена.", show_alert=True)
             return
 
+        is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
         kb = get_bookmark_card_keyboard(
             bookmark.id,
             url=bookmark.url,
             is_read=bookmark.is_read,
+            showing_full_text=True,
             nav_prefix=nav_prefix,
             current_page=current_page,
             total_pages=1,
             photo_count=get_photo_count(bookmark),
             is_note=(bookmark.content_type == ContentType.NOTE),
+            is_fav=is_fav,
         )
-        await update_card_message(callback, bookmark, kb)
+        await update_card_message(callback, bookmark, kb, showing_full_text=True)
         await callback.answer()
     except Exception as e:
         log.exception(f"Error in cb_open_bookmark: {e}")
@@ -197,7 +200,7 @@ async def cb_unread_list(callback: CallbackQuery, session: AsyncSession):
     text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_unread_only=True)
     kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="unread_list")
 
-    if callback.message.photo:
+    if callback.message.photo or callback.message.video or callback.message.animation:
         try:
             await callback.message.delete()
         except Exception:
@@ -231,15 +234,18 @@ async def cmd_random(message: Message, session: AsyncSession):
         history.pop(0)
     _user_random_history[user_id] = history
 
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         bookmark.url,
         bookmark.is_read,
+        showing_full_text=True,
         nav_prefix="random",
         photo_count=get_photo_count(bookmark),
         is_note=(bookmark.content_type == ContentType.NOTE),
+        is_fav=is_fav,
     )
-    await send_card_message(message, message.chat.id, bookmark, kb)
+    await send_card_message(message, message.chat.id, bookmark, kb, showing_full_text=True)
 
 
 @router.callback_query(F.data == "next_random")
@@ -259,15 +265,18 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
         history.pop(0)
     _user_random_history[user_id] = history
 
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         bookmark.url,
         bookmark.is_read,
+        showing_full_text=True,
         nav_prefix="random",
         photo_count=get_photo_count(bookmark),
         is_note=(bookmark.content_type == ContentType.NOTE),
+        is_fav=is_fav,
     )
-    await update_card_message(callback, bookmark, kb)
+    await update_card_message(callback, bookmark, kb, showing_full_text=True)
     await callback.answer()
 
 
@@ -309,22 +318,25 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         return
 
     b = bookmarks[0]
+    is_fav = any(t.name.lower() == "избранное" for t in b.tags)
     kb = get_bookmark_card_keyboard(
         b.id,
         url=b.url,
         is_read=b.is_read,
+        showing_full_text=True,
         nav_prefix="filter_tag",
         current_page=page,
         total_pages=total,
         extra_data=tag_name,
         photo_count=get_photo_count(b),
         is_note=(b.content_type == ContentType.NOTE),
+        is_fav=is_fav,
     )
 
     if "filter_tag:" in (callback.message.reply_markup.inline_keyboard[0][0].callback_data if callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0] else ""):
-        await update_card_message(callback, b, kb, page_info=(page, total))
+        await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total))
     else:
-        await send_card_message(callback.message, callback.message.chat.id, b, kb, page_info=(page, total))
+        await send_card_message(callback.message, callback.message.chat.id, b, kb, showing_full_text=True, page_info=(page, total))
 
     await callback.answer()
 
@@ -336,7 +348,7 @@ async def cb_edit_tags(callback: CallbackQuery, state: FSMContext):
     await state.set_state(TagEditState.waiting_for_tags)
 
     await callback.message.answer(
-        "✏️ Отправьте новые теги через пробел или запятую (например: <code>python async архитектура</code>):",
+        "✏️ Отправьте новые теги через пробел или запятую (например: <code>python async архитектура</code>):\n<i>(или отправьте /cancel для отмены)</i>",
         parse_mode="HTML",
     )
     await callback.answer()
@@ -344,6 +356,13 @@ async def cb_edit_tags(callback: CallbackQuery, state: FSMContext):
 
 @router.message(StateFilter(TagEditState.waiting_for_tags))
 async def process_new_tags(message: Message, state: FSMContext, session: AsyncSession):
+    text = (message.text or "").strip()
+    from app.bot.handlers.bookmarks import MENU_BUTTON_TEXTS
+    if text == "/cancel" or text.startswith("/") or text in MENU_BUTTON_TEXTS:
+        await state.clear()
+        await message.answer("Редактирование тегов отменено.")
+        return
+
     data = await state.get_data()
     bookmark_id_str = data.get("bookmark_id")
     await state.clear()

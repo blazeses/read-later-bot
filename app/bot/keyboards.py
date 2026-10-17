@@ -49,19 +49,21 @@ def get_bookmark_card_keyboard(
     bookmark_id: uuid.UUID,
     url: Optional[str] = None,
     is_read: bool = False,
-    showing_full_text: bool = False,
+    showing_full_text: bool = True,
     nav_prefix: Optional[str] = None,
     current_page: int = 1,
     total_pages: int = 1,
     extra_data: str = "",
     photo_count: int = 1,
     is_note: bool = False,
+    is_fav: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for bookmark cards with action buttons:
-    [⭐ В избранное] [🏷 Изменить теги]
-    [💡 Саммари / 📄 Полный текст] [🗑 Удалить]
-    [⏰ Напомнить] [🌐 Открыть оригинал]
+    [⭐ В избранное / 🌟 В избранном] [🏷 Изменить теги]
+    [✅ Прочитано] [💡 Саммари / 📄 Содержание]
+    [⏰ Напомнить] [🗑 Удалить]
+    [🌐 Открыть оригинал]
     """
     builder = InlineKeyboardBuilder()
 
@@ -94,11 +96,12 @@ def get_bookmark_card_keyboard(
     # 2. Main actions: Favorite & Tag editing
     np_safe = nav_prefix if nav_prefix else "_"
     ex_safe = extra_data if extra_data else "_"
-    fav_cb = make_safe_callback("toggle_fav", bookmark_id)
+    fav_text = "🌟 В избранном" if is_fav else "⭐ В избранное"
+    fav_cb = make_safe_callback("toggle_fav", bookmark_id, np_safe, current_page, total_pages, ex_safe)
     tags_cb = make_safe_callback("edit_tags", bookmark_id)
 
     builder.row(
-        InlineKeyboardButton(text="⭐ В избранное", callback_data=fav_cb),
+        InlineKeyboardButton(text=fav_text, callback_data=fav_cb),
         InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
     )
 
@@ -112,7 +115,7 @@ def get_bookmark_card_keyboard(
         )
     else:
         view_text_mode = 0 if showing_full_text else 1
-        view_label = "💡 Саммари" if showing_full_text else "📄 Полный текст"
+        view_label = "💡 Саммари" if showing_full_text else "📄 Содержание"
         toggle_view_cb = make_safe_callback("toggle_view", bookmark_id, view_text_mode, np_safe, current_page, total_pages, ex_safe)
         builder.row(
             InlineKeyboardButton(text=status_text, callback_data=status_cb),
@@ -136,12 +139,19 @@ def get_bookmark_card_keyboard(
     if ext_row:
         builder.row(*ext_row)
 
-    # 6. Back to list or Next Random button
+    # 6. Back to list, tags, or Next Random button
     if nav_prefix in ("rl", "recent_list", "ul", "unread_list"):
         builder.row(
             InlineKeyboardButton(
                 text="« 📋 К списку",
                 callback_data=make_safe_callback(nav_prefix, current_page),
+            )
+        )
+    elif nav_prefix == "filter_tag":
+        builder.row(
+            InlineKeyboardButton(
+                text="« 🏷 К списку тегов",
+                callback_data="open_tags_menu",
             )
         )
     elif nav_prefix in ("rnd", "random"):
@@ -219,9 +229,10 @@ def get_bookmarks_list_keyboard(
 def get_tags_keyboard(tags_with_counts: List[Tuple[str, int]]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for name, count in tags_with_counts:
+        safe_name = name[:26]
         builder.button(
             text=f"#{name} ({count})",
-            callback_data=f"filter_tag:{name}:1",
+            callback_data=f"filter_tag:{safe_name}:1",
         )
     builder.adjust(2)
     return builder.as_markup()

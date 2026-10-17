@@ -106,19 +106,22 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
         first = results[0]
         b = first.bookmark
         token = get_search_token(clean_q)
+        is_fav = any(t.name.lower() == "избранное" for t in b.tags)
         kb = get_bookmark_card_keyboard(
             b.id,
             url=b.url,
             is_read=b.is_read,
+            showing_full_text=True,
             nav_prefix="sp",
             current_page=1,
             total_pages=total_count,
             extra_data=token,
             photo_count=get_photo_count(b),
             is_note=(b.content_type == ContentType.NOTE),
+            is_fav=is_fav,
         )
 
-        await send_card_message(message, message.chat.id, b, kb, page_info=(1, total_count))
+        await send_card_message(message, message.chat.id, b, kb, showing_full_text=True, page_info=(1, total_count))
         try:
             await status_msg.delete()
         except Exception:
@@ -192,26 +195,46 @@ async def cmd_search(message: Message, state: FSMContext, session: AsyncSession)
 @router.message(StateFilter(SearchState.waiting_for_query))
 async def process_search_query_state(message: Message, state: FSMContext, session: AsyncSession):
     text = (message.text or "").strip()
-    if text.startswith("/") or text in {
-        "➕ Загрузить заметку", "Загрузить заметку",
-        "➕ Добавить заметку", "Добавить заметку",
-        "➕ Добавить статью", "Добавить статью",
-        "📥 Мои закладки", "Мои закладки",
-        "🔍 Поиск", "Поиск",
-        "🕒 Недавние", "Недавние", "недавние",
-        "📖 Непрочитанные", "Непрочитанные",
-        "🏷 Теги", "Теги",
-        "🎲 Случайная", "Случайная",
-        "📊 Дайджест", "Дайджест",
-        "📊 Статистика", "Статистика",
-        "⚙️ Настройки", "Настройки",
-        "❓ Помощь", "Помощь",
-        "🔽 Скрыть меню", "Скрыть меню",
-    }:
-        await state.clear()
+    await state.clear()
+
+    if text in ("📥 Мои закладки", "Мои закладки", "🕒 Недавние", "Недавние"):
+        from app.bot.handlers.manage import cmd_recent
+        await cmd_recent(message, session)
+        return
+    elif text in ("➕ Загрузить заметку", "Загрузить заметку", "➕ Добавить заметку", "Добавить заметку", "➕ Добавить статью"):
+        from app.bot.handlers.base import btn_upload_note
+        await btn_upload_note(message)
+        return
+    elif text in ("📊 Дайджест", "Дайджест"):
+        from app.bot.handlers.base import cmd_toggle_digest
+        await cmd_toggle_digest(message, session)
+        return
+    elif text in ("⚙️ Настройки", "Настройки"):
+        from app.bot.handlers.base import btn_settings
+        await btn_settings(message, session)
+        return
+    elif text in ("❓ Помощь", "Помощь"):
+        from app.bot.handlers.base import cmd_help
+        await cmd_help(message)
+        return
+    elif text in ("🔽 Скрыть меню", "Скрыть меню"):
+        from app.bot.handlers.base import cmd_hide_keyboard
+        await cmd_hide_keyboard(message)
+        return
+    elif text in ("🏷 Теги", "Теги"):
+        from app.bot.handlers.manage import cmd_tags
+        await cmd_tags(message, session)
+        return
+    elif text in ("🎲 Случайная", "Случайная"):
+        from app.bot.handlers.manage import cmd_random
+        await cmd_random(message, session)
+        return
+    elif text == "/cancel":
+        await message.answer("Поиск отменен.", reply_markup=get_main_reply_keyboard())
+        return
+    elif text.startswith("/"):
         return
 
-    await state.clear()
     await execute_search(message, text, session)
 
 
@@ -238,16 +261,19 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
 
     b = results[0].bookmark
     token = get_search_token(query) if query else ""
+    is_fav = any(t.name.lower() == "избранное" for t in b.tags)
     kb = get_bookmark_card_keyboard(
         b.id,
         url=b.url,
         is_read=b.is_read,
+        showing_full_text=True,
         nav_prefix="sp",
         current_page=page,
         total_pages=total_count,
         extra_data=token,
         photo_count=get_photo_count(b),
         is_note=(b.content_type == ContentType.NOTE),
+        is_fav=is_fav,
     )
-    await update_card_message(callback, b, kb, page_info=(page, total_count))
+    await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total_count))
     await callback.answer()

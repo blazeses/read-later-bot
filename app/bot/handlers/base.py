@@ -52,10 +52,10 @@ async def cb_show_demo_bookmark(callback: CallbackQuery):
         "🌐 <b>Статья</b> | ⏱ ~4 мин | 👤 Martin Fowler | 🌐 martinfowler.com\n"
         "📌 <b>Архитектура современных AI-агентов и паттерн Memory Bank</b>\n\n"
         "Статус: 📖 Не прочитано | #ai #архитектура #deepseek\n\n"
-        "💡 <b>Краткая суть:</b>\n"
-        "• Традиционные LLM ограничены размером контекста, поэтому память агента выносится во внешний векторный индекс.\n"
-        "• Паттерн Memory Bank разделяет кратковременную оперативную память диалога и долговременную базу знаний.\n"
-        "• Для точного поиска используется гибридная модель: полнотекстовый поиск BM25 + семантический эмбеддинг через RRF."
+        "📄 <b>Содержание:</b>\n"
+        "Традиционные LLM ограничены размером контекста, поэтому память агента выносится во внешний векторный индекс. "
+        "Паттерн Memory Bank разделяет кратковременную оперативную память диалога и долговременную базу знаний. "
+        "Для точного поиска используется гибридная модель: полнотекстовый поиск BM25 + семантический эмбеддинг через RRF."
     )
     demo_card_kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -64,7 +64,7 @@ async def cb_show_demo_bookmark(callback: CallbackQuery):
                 InlineKeyboardButton(text="🏷 Сменить тег", callback_data="demo_tag"),
             ],
             [
-                InlineKeyboardButton(text="📄 Полный текст", callback_data="demo_fulltext"),
+                InlineKeyboardButton(text="💡 Саммари", callback_data="demo_fulltext"),
                 InlineKeyboardButton(text="🗑 Удалить", callback_data="demo_del"),
             ],
             [

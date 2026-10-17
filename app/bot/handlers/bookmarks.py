@@ -335,7 +335,13 @@ async def cb_save_raw_note(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("toggle_fav:"))
 async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
-    bm_id = uuid.UUID(callback.data.split(":")[1])
+    parts = callback.data.split(":")
+    bm_id = uuid.UUID(parts[1])
+    nav_prefix = parts[2] if len(parts) > 2 and parts[2] != "_" else None
+    current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+    total_pages = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
+    extra_data = parts[5] if len(parts) > 5 and parts[5] != "_" else ""
+
     tag_repo = TagRepository(session)
     bm_repo = BookmarkRepository(session)
 
@@ -349,13 +355,42 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
         new_tags = [t for t in bookmark.tags if t.name.lower() != "избранное"]
         await bm_repo.update_metadata(bm_id, callback.from_user.id, tags=new_tags)
         await session.commit()
+        bookmark.tags = new_tags
+        is_fav = False
         await callback.answer("Удалено из избранного")
     else:
         fav_tags = await tag_repo.get_or_create_tags(callback.from_user.id, ["избранное"])
         combined_tags = list({t.name: t for t in (bookmark.tags + fav_tags)}.values())
         await bm_repo.update_metadata(bm_id, callback.from_user.id, tags=combined_tags)
         await session.commit()
+        bookmark.tags = combined_tags
+        is_fav = True
         await callback.answer("⭐ Добавлено в избранное!", show_alert=False)
+
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
+    if bookmark.photos_json:
+        try:
+            p_list = json.loads(bookmark.photos_json)
+            if isinstance(p_list, list):
+                photo_count = len(p_list)
+        except Exception:
+            pass
+
+    kb = get_bookmark_card_keyboard(
+        bookmark.id,
+        url=bookmark.url,
+        is_read=bookmark.is_read,
+        showing_full_text=True,
+        nav_prefix=nav_prefix,
+        current_page=current_page,
+        total_pages=total_pages,
+        extra_data=extra_data,
+        photo_count=photo_count,
+        is_note=(bookmark.content_type == ContentType.NOTE),
+        is_fav=is_fav,
+    )
+    page_info = (current_page, total_pages) if total_pages > 1 else None
+    await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
 
 
 @router.callback_query(F.data.startswith("remind_menu:"))
@@ -456,20 +491,22 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         except Exception:
             pass
 
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         url=bookmark.url,
         is_read=new_status,
-        showing_full_text=False,
+        showing_full_text=True,
         nav_prefix=nav_prefix,
         current_page=current_page,
         total_pages=total_pages,
         extra_data=extra_data,
         photo_count=photo_count,
         is_note=(bookmark.content_type == ContentType.NOTE),
+        is_fav=is_fav,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
-    await update_card_message(callback, bookmark, kb, showing_full_text=False, page_info=page_info)
+    await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
 
     status_text = "прочитано ✅" if new_status else "не прочитано 📖"
     await callback.answer(f"Отмечено как {status_text}")
@@ -479,7 +516,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
 async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
     parts = callback.data.split(":")
     bookmark_id = uuid.UUID(parts[1])
-    mode = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    mode = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
     showing_full_text = (mode == 1)
     nav_prefix = parts[3] if len(parts) > 3 and parts[3] != "_" else None
     current_page = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
@@ -501,6 +538,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         except Exception:
             pass
 
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         url=bookmark.url,
@@ -512,10 +550,12 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         extra_data=extra_data,
         photo_count=photo_count,
         is_note=(bookmark.content_type == ContentType.NOTE),
+        is_fav=is_fav,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=showing_full_text, page_info=page_info)
-    await callback.answer()
+    view_text = "содержание" if showing_full_text else "краткую суть"
+    await callback.answer(f"Показано {view_text}")
 
 
 @router.callback_query(F.data.startswith("delete:"))
