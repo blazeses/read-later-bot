@@ -2,7 +2,13 @@ import html
 import json
 import re
 from typing import Optional, Tuple
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputMediaPhoto, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
+    Message,
+)
 from app.core.logger import log
 from app.db.models import Bookmark, ContentType
 
@@ -22,6 +28,37 @@ def strip_html_tags(text: str) -> str:
     """Удаляет все HTML-теги для надежного фоллбэка в plain text."""
     clean = re.sub(r"<[^>]+>", "", text)
     return html.unescape(clean)
+
+
+async def _try_edit_caption(msg, caption_html: str, caption_plain: str, reply_markup) -> bool:
+    """Меняет только подпись. True — если сообщение обновлено (или уже было таким)."""
+    try:
+        await msg.edit_caption(caption=caption_html, reply_markup=reply_markup, parse_mode="HTML")
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+    try:
+        await msg.edit_caption(caption=caption_plain, reply_markup=reply_markup, parse_mode=None)
+        return True
+    except Exception as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        log.debug(f"edit_caption failed: {e}")
+    return False
+
+
+async def _try_edit_media(msg, media_html, media_plain, reply_markup) -> bool:
+    """Заменяет медиа вместе с подписью. True — если получилось."""
+    for media in (media_html, media_plain):
+        try:
+            await msg.edit_media(media=media, reply_markup=reply_markup)
+            return True
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                return True
+            log.debug(f"edit_media failed: {e}")
+    return False
 
 
 def build_card_text(
@@ -241,22 +278,21 @@ async def update_card_message(
         caption_html = build_card_text(
             bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=True
         )
+        caption_plain = strip_html_tags(caption_html)[:1024]
+
         if has_video:
-            try:
-                await msg.edit_caption(caption=caption_html, reply_markup=reply_markup, parse_mode="HTML")
+            # То же видео — хватит подписи
+            if video_source == msg.video.file_id:
+                if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
+                    return
+            # Другое видео — edit_caption его НЕ заменит, нужен edit_media
+            elif await _try_edit_media(
+                msg,
+                InputMediaVideo(media=video_source, caption=caption_html, parse_mode="HTML"),
+                InputMediaVideo(media=video_source, caption=caption_plain),
+                reply_markup,
+            ):
                 return
-            except Exception as e:
-                if "message is not modified" in str(e).lower():
-                    return
-                try:
-                    await msg.edit_caption(
-                        caption=strip_html_tags(caption_html)[:1024],
-                        reply_markup=reply_markup,
-                        parse_mode=None,
-                    )
-                    return
-                except Exception:
-                    pass
 
         try:
             await msg.delete()
@@ -278,22 +314,21 @@ async def update_card_message(
         caption_html = build_card_text(
             bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=True
         )
+        caption_plain = strip_html_tags(caption_html)[:1024]
+
         if has_photo:
-            try:
-                await msg.edit_caption(caption=caption_html, reply_markup=reply_markup, parse_mode="HTML")
+            # Та же картинка (Прочитано / Саммари) — только подпись
+            if photo_source == msg.photo[-1].file_id:
+                if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
+                    return
+            # Другая картинка (листание) — edit_media, иначе фото останется старое
+            elif await _try_edit_media(
+                msg,
+                InputMediaPhoto(media=photo_source, caption=caption_html, parse_mode="HTML"),
+                InputMediaPhoto(media=photo_source, caption=caption_plain),
+                reply_markup,
+            ):
                 return
-            except Exception as e:
-                if "message is not modified" in str(e).lower():
-                    return
-                try:
-                    await msg.edit_caption(
-                        caption=strip_html_tags(caption_html)[:1024],
-                        reply_markup=reply_markup,
-                        parse_mode=None,
-                    )
-                    return
-                except Exception:
-                    pass
 
         try:
             await msg.delete()
