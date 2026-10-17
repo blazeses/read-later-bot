@@ -174,6 +174,20 @@ def build_card_text(
     return res
 
 
+def get_primary_photo_source(bookmark: Bookmark) -> Optional[str]:
+    """Возвращает ID или URL главного изображения закладки (с учетом photos_json)."""
+    if bookmark.telegram_photo_id:
+        return bookmark.telegram_photo_id
+    if bookmark.photos_json:
+        try:
+            p_list = json.loads(bookmark.photos_json)
+            if isinstance(p_list, list) and p_list:
+                return p_list[0]
+        except Exception:
+            pass
+    return bookmark.image_url
+
+
 async def send_card_message(
     bot_or_message,
     chat_id: int,
@@ -184,7 +198,7 @@ async def send_card_message(
 ) -> Message:
     bot = bot_or_message if hasattr(bot_or_message, "send_message") else bot_or_message.bot
     video_source = getattr(bookmark, "telegram_video_id", None)
-    photo_source = bookmark.telegram_photo_id or bookmark.image_url
+    photo_source = get_primary_photo_source(bookmark)
 
     # 1. Если это ВИДЕО
     if video_source:
@@ -268,17 +282,110 @@ async def update_card_message(
     page_info: Optional[Tuple[int, int]] = None,
 ):
     video_source = getattr(bookmark, "telegram_video_id", None)
-    photo_source = bookmark.telegram_photo_id or bookmark.image_url
+    photo_source = get_primary_photo_source(bookmark)
     msg = callback.message
     has_photo = bool(msg.photo)
     has_video = bool(msg.video)
 
-    # 1. Если текущее сообщение в Telegram — ТЕКСТОВОЕ:
-    # Редактируем его in-place через edit_text (без удаления и без отправки нового сообщения)
-    if not (has_photo or has_video):
-        full_text_html = build_card_text(
-            bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=False
+    # 1. Если у закладки ВИДЕО
+    if video_source:
+        caption_html = build_card_text(
+            bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=True
         )
+        caption_plain = strip_html_tags(caption_html)[:1024]
+
+        if has_video:
+            # То же видео — обновляем только подпись
+            if video_source == getattr(msg.video, "file_id", None):
+                if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
+                    return
+            # Другое видео — edit_media (меняется видео и подпись)
+            elif await _try_edit_media(
+                msg,
+                InputMediaVideo(media=video_source, caption=caption_html, parse_mode="HTML"),
+                InputMediaVideo(media=video_source, caption=caption_plain, parse_mode=None),
+                reply_markup,
+            ):
+                return
+        elif has_photo:
+            # Фото -> видео через edit_media
+            if await _try_edit_media(
+                msg,
+                InputMediaVideo(media=video_source, caption=caption_html, parse_mode="HTML"),
+                InputMediaVideo(media=video_source, caption=caption_plain, parse_mode=None),
+                reply_markup,
+            ):
+                return
+
+        # Текст -> видео (или fallback)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        try:
+            await msg.answer_video(
+                video=video_source,
+                caption=caption_html,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            pass
+
+    # 2. Если у закладки ФОТО (прикрепленная фотография / фото-заметка)
+    elif photo_source:
+        caption_html = build_card_text(
+            bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=True
+        )
+        caption_plain = strip_html_tags(caption_html)[:1024]
+
+        if has_photo:
+            # Та же картинка (Прочитано / Саммари / В избранное) — только подпись
+            if photo_source == msg.photo[-1].file_id:
+                if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
+                    return
+            # Другая картинка (листание фото -> фото) — edit_media (меняется и фото, и подпись)
+            elif await _try_edit_media(
+                msg,
+                InputMediaPhoto(media=photo_source, caption=caption_html, parse_mode="HTML"),
+                InputMediaPhoto(media=photo_source, caption=caption_plain, parse_mode=None),
+                reply_markup,
+            ):
+                return
+        elif has_video:
+            # Видео -> фото через edit_media
+            if await _try_edit_media(
+                msg,
+                InputMediaPhoto(media=photo_source, caption=caption_html, parse_mode="HTML"),
+                InputMediaPhoto(media=photo_source, caption=caption_plain, parse_mode=None),
+                reply_markup,
+            ):
+                return
+
+        # Текст -> фото (открытие заметки с фото из списка или при листании):
+        # Обязательно отображаем прикрепленное фото через answer_photo
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        try:
+            await msg.answer_photo(
+                photo=photo_source,
+                caption=caption_html,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            pass
+
+    # 3. Текстовое сообщение (заметка или статья без фото/видео)
+    full_text_html = build_card_text(
+        bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=False
+    )
+    if not (has_photo or has_video):
+        # Текст -> текст: обновляем прямо на месте через edit_text
         try:
             await msg.edit_text(
                 text=full_text_html,
@@ -298,80 +405,14 @@ async def update_card_message(
                     disable_web_page_preview=True,
                 )
                 return
-            except Exception as e2:
-                if "message is not modified" in str(e2).lower():
-                    return
-                log.debug(f"edit_text failed: {e2}")
+            except Exception:
+                pass
 
-    # 2. Если текущее сообщение в Telegram — МЕДИА (фото или видео):
-    caption_html = build_card_text(
-        bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=True
-    )
-    caption_plain = strip_html_tags(caption_html)[:1024]
-
-    # 2.1. Если у закладки видео
-    if video_source:
-        if has_video and video_source == getattr(msg.video, "file_id", None):
-            if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
-                return
-        elif await _try_edit_media(
-            msg,
-            InputMediaVideo(media=video_source, caption=caption_html, parse_mode="HTML"),
-            InputMediaVideo(media=video_source, caption=caption_plain),
-            reply_markup,
-        ):
-            return
-
-    # 2.2. Если у закладки фото
-    elif photo_source:
-        if has_photo and photo_source == (msg.photo[-1].file_id if msg.photo else None):
-            if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
-                return
-        elif await _try_edit_media(
-            msg,
-            InputMediaPhoto(media=photo_source, caption=caption_html, parse_mode="HTML"),
-            InputMediaPhoto(media=photo_source, caption=caption_plain),
-            reply_markup,
-        ):
-            return
-
-    # 2.3. Если медиа то же самое, или закладка текстовая (без медиа),
-    # или _try_edit_media не смог скачать URL — обновляем подпись in-place!
-    # Сообщение обновляется прямо на месте, без удаления и без спама новым сообщением.
-    if await _try_edit_caption(msg, caption_html, caption_plain, reply_markup):
-        return
-
-    # 3. Крайний fallback (только если редактирование запрещено Telegram API, например media_group_id альбома)
+    # Фото -> текст (переход на текстовую заметку без фото):
     try:
         await msg.delete()
     except Exception:
         pass
-    if photo_source:
-        try:
-            await msg.answer_photo(
-                photo=photo_source,
-                caption=caption_html,
-                reply_markup=reply_markup,
-                parse_mode="HTML",
-            )
-            return
-        except Exception:
-            pass
-    elif video_source:
-        try:
-            await msg.answer_video(
-                video=video_source,
-                caption=caption_html,
-                reply_markup=reply_markup,
-                parse_mode="HTML",
-            )
-            return
-        except Exception:
-            pass
-
-    full_text_html = build_card_text(
-        bookmark, showing_full_text=showing_full_text, page_info=page_info, for_caption=False
-    )
     try:
         await msg.answer(
             text=full_text_html,
