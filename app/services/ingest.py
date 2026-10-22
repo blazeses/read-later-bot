@@ -145,6 +145,7 @@ class IngestionQueueService:
                             photo_count=photo_count,
                             is_note=(existing.content_type == ContentType.NOTE),
                             has_file=has_file,
+                            is_pinned=getattr(existing, "is_pinned", False),
                         )
                         await send_card_message(self.bot, task.chat_id, existing, kb)
                         return
@@ -314,6 +315,7 @@ class IngestionQueueService:
                     is_note=is_note,
                     is_fav=is_fav,
                     has_file=has_file,
+                    is_pinned=getattr(bookmark, "is_pinned", False),
                 )
 
                 try:

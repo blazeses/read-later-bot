@@ -58,6 +58,7 @@ def get_bookmark_card_keyboard(
     is_note: bool = False,
     is_fav: bool = False,
     has_file: bool = False,
+    is_pinned: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for bookmark cards with action buttons:
@@ -94,16 +95,20 @@ def get_bookmark_card_keyboard(
             )
         builder.row(*nav_buttons)
 
-    # 2. Main actions: Favorite & Tag editing
+    # 2. Main actions: Favorite, Pin & Tag editing
     np_safe = nav_prefix if nav_prefix else "_"
     ex_safe = extra_data if extra_data else "_"
     fav_text = "🌟 В избранном" if is_fav else "⭐ В избранное"
     fav_cb = make_safe_callback("toggle_fav", bookmark_id, np_safe, current_page, total_pages, ex_safe)
+
+    pin_text = "📍 Открепить" if is_pinned else "📌 Закрепить"
+    pin_cb = make_safe_callback("pin", bookmark_id, np_safe, current_page, total_pages, ex_safe)
+
     tags_cb = make_safe_callback("edit_tags", bookmark_id)
 
     builder.row(
         InlineKeyboardButton(text=fav_text, callback_data=fav_cb),
-        InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
+        InlineKeyboardButton(text=pin_text, callback_data=pin_cb),
     )
 
     # 3. Read status and In-place text toggle (strictly <= 64 bytes)
@@ -113,6 +118,7 @@ def get_bookmark_card_keyboard(
     if is_note:
         builder.row(
             InlineKeyboardButton(text=status_text, callback_data=status_cb),
+            InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
         )
     else:
         view_text_mode = 0 if showing_full_text else 1
@@ -123,13 +129,22 @@ def get_bookmark_card_keyboard(
             InlineKeyboardButton(text=view_label, callback_data=toggle_view_cb),
         )
 
-    # 4. Remind & Delete
+    # 4. Remind & Delete / Tag change
     remind_cb = make_safe_callback("remind_menu", bookmark_id)
     delete_cb = make_safe_callback("delete", bookmark_id)
-    builder.row(
-        InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
-    )
+    if is_note:
+        builder.row(
+            InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
+            InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
+        )
+        builder.row(
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
+        )
 
     # 5. External URL, album photos, download file
     ext_row = []
@@ -143,7 +158,7 @@ def get_bookmark_card_keyboard(
         builder.row(*ext_row)
 
     # 6. Back to list, tags, or Next Random button
-    if nav_prefix in ("rl", "recent_list", "ul", "unread_list"):
+    if nav_prefix in ("rl", "recent_list", "ul", "unread_list", "pl", "pinned_list"):
         builder.row(
             InlineKeyboardButton(
                 text="« 📋 К списку",

@@ -105,6 +105,7 @@ class Bookmark(Base):
     user_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     telegram_photo_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     telegram_video_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

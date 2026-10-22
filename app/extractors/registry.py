@@ -37,7 +37,9 @@ class ContentExtractorRegistry:
         url: Optional[str] = None,
     ) -> ExtractedContent:
         from urllib.parse import urlparse
-        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        from app.extractors.url_utils import normalize_emoji_digits
+        clean_text = normalize_emoji_digits(text)
+        lines = [line.strip() for line in clean_text.split("\n") if line.strip()]
         default_label = "Видео-заметка" if telegram_video_id else ("Фото-заметка" if telegram_photo_id else "Заметка")
         title = lines[0][:80] if lines else default_label
         if len(title) == 80:
@@ -56,7 +58,7 @@ class ContentExtractorRegistry:
             title=title,
             author=author,
             date=None,
-            text=text,
+            text=clean_text,
             language=None,
             domain=domain,
             content_type=ContentType.NOTE,

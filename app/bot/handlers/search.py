@@ -121,6 +121,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
             is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
             is_fav=is_fav,
             has_file=has_file,
+            is_pinned=getattr(b, "is_pinned", False),
         )
 
         await send_card_message(message, message.chat.id, b, kb, showing_full_text=True, page_info=(1, total_count))
@@ -278,6 +279,7 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
         is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(b, "is_pinned", False),
     )
     await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total_count))
     await callback.answer()

@@ -76,7 +76,10 @@ def build_card_text(
     if getattr(bookmark, "telegram_document_id", None):
         type_badge = "📦 Архив"
     tags_str = " ".join([f"#{html.escape(t.name)}" for t in bookmark.tags]) if bookmark.tags else ""
+    tags_part = f" | {tags_str}" if tags_str else ""
     status_icon = "✅ Прочитано" if bookmark.is_read else "📖 Не прочитано"
+    pin_badge = "📌 Закреплено | " if getattr(bookmark, "is_pinned", False) else ""
+    status_line = f"Статус: {pin_badge}{status_icon}{tags_part}"
 
     author_clean = html.escape(bookmark.author.strip()) if bookmark.author else ""
     author_str = f" | 👤 {author_clean}" if author_clean else ""
@@ -95,13 +98,16 @@ def build_card_text(
 
     # ДЛЯ ЗАМЕТОК: оригинальный текст пользователя 1:1, без перевода, сокращений и правок
     if bookmark.content_type == ContentType.NOTE:
+        from app.extractors.url_utils import normalize_emoji_digits
         note_body = (bookmark.full_text or bookmark.summary or bookmark.user_comment or "").strip()
+        note_body = normalize_emoji_digits(note_body)
         title_raw = (bookmark.title or "").strip()
+        title_raw = normalize_emoji_digits(title_raw)
         # Если заголовок совпадает с текстом или его началом, не дублируем его
         show_title = bool(title_raw and not note_body.startswith(title_raw.rstrip(".")))
         title_block = f"📌 <b>{html.escape(title_raw)}</b>\n\n" if show_title else ""
 
-        limit = 650 if for_caption else 3300
+        limit = 800 if for_caption else 3800
         if len(note_body) > limit:
             note_body = note_body[:limit] + "..."
 
@@ -111,7 +117,7 @@ def build_card_text(
             f"{header}"
             f"{meta_line}\n"
             f"{title_block}"
-            f"Статус: {status_icon} | {tags_str}\n\n"
+            f"{status_line}\n\n"
             f"{content_block}"
         )
     else:
@@ -141,7 +147,7 @@ def build_card_text(
                 f"{header}"
                 f"{meta_line}\n"
                 f"📌 <b>{title_clean}</b>\n\n"
-                f"Статус: {status_icon} | {tags_str}\n\n"
+                f"{status_line}\n\n"
                 f"{content_block}"
             )
         else:
@@ -169,7 +175,7 @@ def build_card_text(
                 f"{header}"
                 f"{meta_line}\n"
                 f"📌 <b>{title_clean}</b>\n\n"
-                f"Статус: {status_icon} | {tags_str}\n\n"
+                f"{status_line}\n\n"
                 f"{content_block}"
             )
 

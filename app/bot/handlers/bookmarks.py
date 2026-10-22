@@ -16,7 +16,7 @@ from app.core.logger import log
 from app.db.models import ContentType
 from app.db.repositories import BookmarkRepository, TagRepository, UserRepository
 from app.extractors.twitter import TWITTER_URL_REGEX
-from app.extractors.url_utils import extract_urls
+from app.extractors.url_utils import extract_urls, normalize_emoji_digits
 from app.extractors.youtube import YOUTUBE_REGEX
 from app.providers.registry import get_embedding_provider, get_vector_store
 from app.services.ingest import IngestTask, IngestionQueueService
@@ -42,6 +42,7 @@ MENU_BUTTON_TEXTS = {
     "📥 Мои закладки", "Мои закладки",
     "🔍 Поиск", "Поиск",
     "🕒 Недавние", "Недавние", "недавние",
+    "📌 Закрепленные", "Закрепленные", "📌 Закреплённые", "Закреплённые",
     "📖 Непрочитанные", "Непрочитанные", "непрочитанные",
     "🏷 Теги", "Теги", "теги",
     "🎲 Случайная", "Случайная", "случайная",
@@ -84,7 +85,7 @@ async def handle_text_or_urls(message: Message):
         return
 
     try:
-        text = message.text.strip()
+        text = normalize_emoji_digits(message.text.strip())
         urls = extract_urls(text, message.entities)
         author = extract_forward_author(message)
 
@@ -205,7 +206,7 @@ async def handle_media_upload(message: Message):
         caption_entities = None
         for m in messages:
             if m.caption and m.caption.strip():
-                caption = m.caption.strip()
+                caption = normalize_emoji_digits(m.caption.strip())
                 caption_entities = m.caption_entities
                 break
 
@@ -316,7 +317,7 @@ async def handle_document_upload(message: Message, session: AsyncSession):
         archive_tag = ext.lstrip(".").lower()
         tags = await tag_repo.get_or_create_tags(message.from_user.id, ["архив", archive_tag])
 
-        caption_note = (message.caption or "").strip()
+        caption_note = normalize_emoji_digits((message.caption or "").strip())
         full_text = caption_note if caption_note else f"Файл архива сохранён в закладочник.\nИмя: {filename}\nРазмер: {size_str}"
         summary = f"📦 Архив: {filename} ({size_str})"
 
@@ -356,6 +357,7 @@ async def handle_document_upload(message: Message, session: AsyncSession):
             is_read=False,
             showing_full_text=True,
             has_file=True,
+            is_pinned=False,
         )
         await send_card_message(
             bot_or_message=message,
@@ -499,6 +501,7 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
@@ -617,6 +620,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
@@ -666,6 +670,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=showing_full_text, page_info=page_info)
@@ -728,4 +733,59 @@ async def cb_download_document(callback: CallbackQuery, session: AsyncSession):
     except Exception as e:
         log.exception(f"Failed to send document {bookmark.telegram_document_id}: {e}")
         await callback.message.answer("⚠️ Не удалось отправить файл из Telegram. Возможно, файл был удалён.")
+
+
+@router.callback_query(F.data.startswith("pin:"))
+async def cb_toggle_pin(callback: CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    bm_id = uuid.UUID(parts[1])
+    nav_prefix = parts[2] if len(parts) > 2 and parts[2] != "_" else None
+    current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+    total_pages = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
+    extra_data = parts[5] if len(parts) > 5 and parts[5] != "_" else ""
+
+    repo = BookmarkRepository(session)
+    bookmark = await repo.toggle_pin(bm_id, callback.from_user.id)
+    if not bookmark:
+        await callback.answer("Закладка не найдена.", show_alert=True)
+        return
+
+    await session.commit()
+
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
+    if bookmark.photos_json:
+        try:
+            p_list = json.loads(bookmark.photos_json)
+            if isinstance(p_list, list):
+                photo_count = len(p_list)
+        except Exception:
+            pass
+
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+    is_pinned = getattr(bookmark, "is_pinned", False)
+
+    kb = get_bookmark_card_keyboard(
+        bookmark.id,
+        url=bookmark.url,
+        is_read=bookmark.is_read,
+        showing_full_text=True,
+        nav_prefix=nav_prefix,
+        current_page=current_page,
+        total_pages=total_pages,
+        extra_data=extra_data,
+        photo_count=photo_count,
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
+        is_fav=is_fav,
+        has_file=has_file,
+        is_pinned=is_pinned,
+    )
+    page_info = (current_page, total_pages) if total_pages > 1 else None
+    await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
+
+    if is_pinned:
+        await callback.answer("📌 Закреплено! Заметка всегда будет вверху списка.")
+    else:
+        await callback.answer("📍 Откреплено от верха списка.")
+
 

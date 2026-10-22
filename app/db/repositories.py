@@ -198,6 +198,7 @@ class BookmarkRepository:
         telegram_video_id: Optional[str] = None,
         telegram_document_id: Optional[str] = None,
         photos_json: Optional[str] = None,
+        is_pinned: bool = False,
     ) -> Bookmark:
         bookmark = Bookmark(
             id=uuid.uuid4(),
@@ -218,6 +219,7 @@ class BookmarkRepository:
             telegram_video_id=telegram_video_id,
             telegram_document_id=telegram_document_id,
             photos_json=photos_json,
+            is_pinned=is_pinned,
         )
 
         # Compute tsvector in Postgres if dialect supports it
@@ -283,6 +285,13 @@ class BookmarkRepository:
             await self.session.flush()
         return bookmark
 
+    async def toggle_pin(self, bookmark_id: uuid.UUID, user_id: int) -> Optional[Bookmark]:
+        bookmark = await self.get_by_id(bookmark_id, user_id)
+        if bookmark:
+            bookmark.is_pinned = not getattr(bookmark, "is_pinned", False)
+            await self.session.flush()
+        return bookmark
+
     async def delete(self, bookmark_id: uuid.UUID, user_id: int) -> bool:
         stmt = delete(Bookmark).where(and_(Bookmark.id == bookmark_id, Bookmark.user_id == user_id))
         result = await self.session.execute(stmt)
@@ -297,6 +306,7 @@ class BookmarkRepository:
         content_type: Optional[ContentType] = None,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
+        is_pinned: Optional[bool] = None,
         limit: int = 5,
         offset: int = 0,
     ) -> Tuple[List[Bookmark], int]:
@@ -304,6 +314,8 @@ class BookmarkRepository:
 
         if is_read is not None:
             filters.append(Bookmark.is_read == is_read)
+        if is_pinned is not None:
+            filters.append(Bookmark.is_pinned == is_pinned)
         if content_type is not None:
             filters.append(Bookmark.content_type == content_type)
         if date_from is not None:
@@ -322,7 +334,12 @@ class BookmarkRepository:
             base_stmt = base_stmt.join(Bookmark.tags).where(tag_filter)
             count_stmt = count_stmt.join(Bookmark.tags).where(tag_filter)
 
-        base_stmt = base_stmt.where(and_(*filters)).order_by(Bookmark.created_at.desc()).limit(limit).offset(offset)
+        base_stmt = (
+            base_stmt.where(and_(*filters))
+            .order_by(Bookmark.is_pinned.desc(), Bookmark.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         count_stmt = count_stmt.where(and_(*filters))
 
         items_res = await self.session.execute(base_stmt)

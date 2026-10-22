@@ -46,9 +46,15 @@ def render_bookmarks_list(
     total_count: int,
     limit: int = PAGE_SIZE,
     is_unread_only: bool = False,
+    is_pinned_only: bool = False,
 ) -> str:
     total_pages = max(1, math.ceil(total_count / limit))
-    title_header = "📖 <b>Непрочитанные материалы</b>" if is_unread_only else "🕒 <b>Недавние материалы</b>"
+    if is_pinned_only:
+        title_header = "📌 <b>Закреплённые материалы</b>"
+    elif is_unread_only:
+        title_header = "📖 <b>Непрочитанные материалы</b>"
+    else:
+        title_header = "🕒 <b>Недавние материалы</b>"
     lines = [f"{title_header} (всего: {total_count}, стр. {current_page}/{total_pages}):\n"]
 
     for idx, b in enumerate(bookmarks, start=1):
@@ -57,6 +63,7 @@ def render_bookmarks_list(
         domain_str = html.escape(b.domain or "заметка")
         tags_str = " ".join([f"#{html.escape(t.name)}" for t in b.tags[:3]]) if b.tags else ""
         tags_part = f" | {tags_str}" if tags_str else ""
+        pin_badge = "📌 <b>[Закреплено]</b> " if getattr(b, "is_pinned", False) else ""
 
         photos_note = ""
         if b.photos_json:
@@ -68,7 +75,7 @@ def render_bookmarks_list(
                 pass
 
         lines.append(
-            f"<b>[{idx}]</b> 📌 <b>{safe_title}</b>\n"
+            f"<b>[{idx}]</b> {pin_badge}<b>{safe_title}</b>\n"
             f"    {status_icon} 🌐 {domain_str} | ⏱ ~{b.reading_time_min} мин.{photos_note}{tags_part}\n"
         )
 
@@ -161,6 +168,7 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
             is_fav=is_fav,
             has_file=has_file,
+            is_pinned=getattr(bookmark, "is_pinned", False),
         )
         await update_card_message(callback, bookmark, kb, showing_full_text=True)
         await callback.answer()
@@ -216,6 +224,58 @@ async def cb_unread_list(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
+# --- Pinned Articles with Direct Selection ---
+
+@router.message(Command("pinned"))
+@router.message(F.text.in_({"📌 Закрепленные", "Закрепленные", "📌 Закреплённые", "Закреплённые"}))
+async def cmd_pinned(message: Message, session: AsyncSession):
+    repo = BookmarkRepository(session)
+    bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, is_pinned=True, limit=PAGE_SIZE, offset=0)
+
+    if not bookmarks:
+        await message.answer(
+            "📌 <b>У вас пока нет закреплённых материалов.</b>\n\n"
+            "Чтобы закрепить закладку или заметку, откройте её и нажмите кнопку <b>«📌 Закрепить»</b>. Она всегда будет отображаться в самом верху ваших закладок!",
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    text = render_bookmarks_list(bookmarks, current_page=1, total_count=total, limit=PAGE_SIZE, is_pinned_only=True)
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="pl")
+    await message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("pl:") | F.data.startswith("pinned_list:"))
+async def cb_pinned_list(callback: CallbackQuery, session: AsyncSession):
+    page = int(callback.data.split(":")[1])
+    offset = (page - 1) * PAGE_SIZE
+    repo = BookmarkRepository(session)
+    bookmarks, total = await repo.list_bookmarks(user_id=callback.from_user.id, is_pinned=True, limit=PAGE_SIZE, offset=offset)
+
+    if not bookmarks:
+        await callback.answer("Закреплённых закладок нет.", show_alert=True)
+        return
+
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_pinned_only=True)
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="pl")
+
+    if callback.message.photo or callback.message.video or callback.message.animation:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+    await callback.answer()
+
+
+
 # --- Smart Random Without Consecutive Repeats ---
 
 @router.message(Command("random"))
@@ -248,6 +308,7 @@ async def cmd_random(message: Message, session: AsyncSession):
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
     )
     await send_card_message(message, message.chat.id, bookmark, kb, showing_full_text=True)
 
@@ -281,6 +342,7 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
     )
     await update_card_message(callback, bookmark, kb, showing_full_text=True)
     await callback.answer()
@@ -339,6 +401,7 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
         is_fav=is_fav,
         has_file=has_file,
+        is_pinned=getattr(b, "is_pinned", False),
     )
 
     if "filter_tag:" in (callback.message.reply_markup.inline_keyboard[0][0].callback_data if callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0] else ""):

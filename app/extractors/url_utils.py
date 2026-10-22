@@ -108,3 +108,24 @@ def extract_domain(url: str) -> str:
         return parsed.netloc.lower().split(":")[0]
     except Exception:
         return ""
+
+
+def normalize_emoji_digits(text: Optional[str]) -> str:
+    """
+    Заменяет цифры-эмодзи и кейкапы (1️⃣, 2️⃣ и т.д., включая кастомные эмодзи TG Premium)
+    на обычные стандартные цифры.
+    """
+    if not text:
+        return "" if text is None else text
+    replacements = {
+        "1️⃣": "1.", "2️⃣": "2.", "3️⃣": "3.", "4️⃣": "4.", "5️⃣": "5.",
+        "6️⃣": "6.", "7️⃣": "7.", "8️⃣": "8.", "9️⃣": "9.", "0️⃣": "0.", "🔟": "10.",
+        "1\ufe0f\u20e3": "1.", "2\ufe0f\u20e3": "2.", "3\ufe0f\u20e3": "3.", "4\ufe0f\u20e3": "4.", "5\ufe0f\u20e3": "5.",
+        "6\ufe0f\u20e3": "6.", "7\ufe0f\u20e3": "7.", "8\ufe0f\u20e3": "8.", "9\ufe0f\u20e3": "9.", "0\ufe0f\u20e3": "0.",
+        "1\u20e3": "1.", "2\u20e3": "2.", "3\u20e3": "3.", "4\u20e3": "4.", "5\u20e3": "5.",
+        "6\u20e3": "6.", "7\u20e3": "7.", "8\u20e3": "8.", "9\u20e3": "9.", "0\u20e3": "0.",
+    }
+    for emo, digit in replacements.items():
+        text = text.replace(emo, digit)
+    return text
+
