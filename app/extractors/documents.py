@@ -1,5 +1,6 @@
 import asyncio
 import os
+import zipfile
 from typing import Optional
 from app.core.config import settings
 from app.core.logger import log
@@ -100,8 +101,103 @@ class DocumentExtractor(BaseExtractor):
         elif ext in (".txt", ".md", ".markdown", ".rst"):
             text = self._extract_text(file_path)
 
+        elif ext == ".zip":
+            text, zip_title, zip_author = self._extract_zip(file_path, filename)
+            if zip_title:
+                title = zip_title
+            if zip_author:
+                author = zip_author
+
         else:
             raise ValueError(f"Неподдерживаемый формат файла: {ext}")
+
+        return text, title, author
+
+    def _extract_zip(self, file_path: str, filename: str) -> tuple[str, str, Optional[str]]:
+        if not zipfile.is_zipfile(file_path):
+            raise ValueError("Файл не является корректным ZIP-архивом.")
+
+        text_exts = {
+            ".txt", ".md", ".markdown", ".rst",
+            ".py", ".js", ".ts", ".jsx", ".tsx",
+            ".html", ".htm", ".css", ".scss",
+            ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+            ".csv", ".tsv", ".sql", ".sh", ".bash", ".bat", ".ps1",
+            ".c", ".cpp", ".h", ".hpp", ".rs", ".go", ".java", ".kt",
+            ".xml", ".log",
+        }
+        named_text_files = {"dockerfile", "makefile", "license", "readme"}
+
+        manifest_lines = []
+        text_sections = []
+        total_extracted_len = 0
+        title = f"Архив {filename}"
+        author = None
+
+        with zipfile.ZipFile(file_path, "r") as zf:
+            infolist = zf.infolist()
+            # Отфильтровываем служебные файлы (macOS, скрытые файлы, пути с ..)
+            files = [
+                info for info in infolist
+                if not info.is_dir()
+                and not info.filename.startswith("__MACOSX/")
+                and not os.path.basename(info.filename).startswith(".")
+                and ".." not in info.filename
+            ]
+
+            manifest_lines.append(f"📦 Содержимое архива «{filename}» ({len(files)} файлов):")
+            for info in files[:50]:
+                size_kb = info.file_size / 1024
+                manifest_lines.append(f"• {info.filename} ({size_kb:.1f} КБ)")
+            if len(files) > 50:
+                manifest_lines.append(f"... и ещё {len(files) - 50} файлов")
+
+            # Приоритет отдаём README и markdown файлам
+            def _sort_key(info):
+                bname = os.path.basename(info.filename).lower()
+                if "readme" in bname:
+                    return 0
+                if bname.endswith((".md", ".txt")):
+                    return 1
+                return 2
+
+            for info in sorted(files, key=_sort_key):
+                if total_extracted_len >= settings.MAX_TEXT_LENGTH:
+                    break
+
+                bname = os.path.basename(info.filename).lower()
+                f_ext = os.path.splitext(bname)[1].lower()
+
+                if f_ext in text_exts or bname in named_text_files:
+                    # Пропускаем гигантские файлы распаковки (> 1 МБ)
+                    if info.file_size > 1_048_576:
+                        continue
+                    try:
+                        raw = zf.read(info.filename)
+                        content_str = None
+                        for enc in ("utf-8", "cp1251", "latin-1"):
+                            try:
+                                content_str = raw[:40000].decode(enc).strip()
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                        if content_str:
+                            section = f"📄 Файл: {info.filename}\n{content_str}"
+                            text_sections.append(section)
+                            total_extracted_len += len(section)
+                            if "readme" in bname and not author:
+                                first_line = content_str.split("\n")[0].strip("# \t")
+                                if first_line and len(first_line) < 80:
+                                    title = f"{first_line} ({filename})"
+                    except Exception as fe:
+                        log.debug(f"Failed reading {info.filename} from zip: {fe}")
+                        continue
+
+        full_text = "\n\n".join(manifest_lines)
+        if text_sections:
+            full_text += "\n\n" + "\n\n---\n\n".join(text_sections)
+
+        return full_text, title, author
 
         return text, title, author
 

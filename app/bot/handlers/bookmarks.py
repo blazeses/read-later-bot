@@ -292,10 +292,10 @@ async def handle_document_upload(message: Message):
     filename = doc.file_name or "document"
     ext = os.path.splitext(filename)[1].lower()
 
-    if ext not in (".pdf", ".docx", ".txt", ".md", ".markdown"):
+    if ext not in (".pdf", ".docx", ".txt", ".md", ".markdown", ".zip"):
         await message.answer(
             f"❌ Неподдерживаемый формат файла: {ext}\n"
-            "Поддерживаются: PDF, DOCX, TXT, MD."
+            "Поддерживаются: PDF, DOCX, TXT, MD, ZIP."
         )
         return
 
