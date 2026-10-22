@@ -82,3 +82,54 @@ async def test_youtube_extractor_mock():
         assert "TechChannel" in content.author
         assert "Сегодня мы говорим о векторных базах данных" in content.text
         assert content.content_type == ContentType.YOUTUBE
+
+
+@pytest.mark.asyncio
+async def test_document_extractor_zip():
+    import zipfile
+    extractor = DocumentExtractor()
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+        zip_path = f.name
+
+    try:
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("README.md", "# Мой Проект\n\nОписание проекта из архива.")
+            zf.writestr("main.py", "print('hello from zip')")
+            zf.writestr("data/notes.txt", "Важная заметка внутри архива.")
+
+        content = await extractor.extract(zip_path, filename="project.zip")
+        assert content.success is True
+        assert content.content_type == ContentType.DOCUMENT
+        assert "📦 Содержимое архива «project.zip»" in content.text
+        assert "README.md" in content.text
+        assert "Описание проекта из архива" in content.text
+        assert "print('hello from zip')" in content.text
+        assert "Мой Проект" in content.title
+    finally:
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+
+
+@pytest.mark.asyncio
+async def test_document_extractor_zip_binary_only():
+    import zipfile
+    extractor = DocumentExtractor()
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+        zip_path = f.name
+
+    try:
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("image.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR...")
+            zf.writestr("audio.mp3", b"ID3\x03\x00\x00\x00...")
+
+        content = await extractor.extract(zip_path, filename="media.zip")
+        assert content.success is True
+        assert content.content_type == ContentType.DOCUMENT
+        assert "📦 Содержимое архива «media.zip» (2 файлов):" in content.text
+        assert "image.png" in content.text
+        assert "audio.mp3" in content.text
+    finally:
+        if os.path.exists(zip_path):
+            os.remove(zip_path)

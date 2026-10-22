@@ -57,6 +57,7 @@ def get_bookmark_card_keyboard(
     photo_count: int = 1,
     is_note: bool = False,
     is_fav: bool = False,
+    has_file: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for bookmark cards with action buttons:
@@ -130,8 +131,10 @@ def get_bookmark_card_keyboard(
         InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
     )
 
-    # 5. External URL and album photos
+    # 5. External URL, album photos, download file
     ext_row = []
+    if has_file:
+        ext_row.append(InlineKeyboardButton(text="📥 Скачать архив", callback_data=make_safe_callback("dl_doc", bookmark_id)))
     if url and url.startswith("http"):
         ext_row.append(InlineKeyboardButton(text="🌐 Оригинал", url=url))
     if photo_count > 1:

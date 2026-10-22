@@ -157,6 +157,86 @@ async def test_video_changes_when_switching_cards():
     old_msg.edit_caption.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_text_to_photo_displays_photo():
+    old_msg = MagicMock()
+    old_msg.photo = None
+    old_msg.video = None
+    old_msg.media_group_id = None
+    old_msg.delete = AsyncMock()
+    old_msg.answer_photo = AsyncMock()
+
+    callback = MagicMock()
+    callback.message = old_msg
+
+    await update_card_message(callback, make_bookmark("ATTACHED_PHOTO"), MagicMock())
+
+    old_msg.delete.assert_awaited_once()
+    old_msg.answer_photo.assert_awaited_once()
+    assert old_msg.answer_photo.await_args.kwargs["photo"] == "ATTACHED_PHOTO"
+
+
+@pytest.mark.asyncio
+async def test_photo_from_photos_json_is_displayed():
+    old_msg = MagicMock()
+    old_msg.photo = None
+    old_msg.video = None
+    old_msg.media_group_id = None
+    old_msg.delete = AsyncMock()
+    old_msg.answer_photo = AsyncMock()
+
+    callback = MagicMock()
+    callback.message = old_msg
+
+    b = make_bookmark(None)
+    b.photos_json = '["ALBUM_PHOTO_1", "ALBUM_PHOTO_2"]'
+
+    await update_card_message(callback, b, MagicMock())
+
+    old_msg.delete.assert_awaited_once()
+    old_msg.answer_photo.assert_awaited_once()
+    assert old_msg.answer_photo.await_args.kwargs["photo"] == "ALBUM_PHOTO_1"
+
+
+@pytest.mark.asyncio
+async def test_photo_to_text_note_clears_photo():
+    old_msg = MagicMock()
+    old_msg.photo = [MagicMock(file_id="OLD_PHOTO")]
+    old_msg.video = None
+    old_msg.media_group_id = None
+    old_msg.delete = AsyncMock()
+    old_msg.answer = AsyncMock()
+
+    callback = MagicMock()
+    callback.message = old_msg
+
+    # Текстовая заметка без фото
+    await update_card_message(callback, make_bookmark(None), MagicMock())
+
+    old_msg.delete.assert_awaited_once()
+    old_msg.answer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_text_to_text_edits_in_place():
+    old_msg = MagicMock()
+    old_msg.photo = None
+    old_msg.video = None
+    old_msg.media_group_id = None
+    old_msg.edit_text = AsyncMock()
+    old_msg.delete = AsyncMock()
+    old_msg.answer = AsyncMock()
+
+    callback = MagicMock()
+    callback.message = old_msg
+
+    await update_card_message(callback, make_bookmark(None), MagicMock())
+
+    old_msg.edit_text.assert_awaited_once()
+    old_msg.delete.assert_not_awaited()
+    old_msg.answer.assert_not_awaited()
+
+
 if __name__ == "__main__":
     async def run_all():
         await test_photo_changes_when_switching_cards()
@@ -165,6 +245,14 @@ if __name__ == "__main__":
         print("test_same_photo_uses_caption_only: PASSED")
         await test_video_changes_when_switching_cards()
         print("test_video_changes_when_switching_cards: PASSED")
-        print("\nALL CARD MEDIA EDIT TESTS PASSED!")
+        await test_text_to_photo_displays_photo()
+        print("test_text_to_photo_displays_photo: PASSED")
+        await test_photo_from_photos_json_is_displayed()
+        print("test_photo_from_photos_json_is_displayed: PASSED")
+        await test_photo_to_text_note_clears_photo()
+        print("test_photo_to_text_note_clears_photo: PASSED")
+        await test_text_to_text_edits_in_place()
+        print("test_text_to_text_edits_in_place: PASSED")
+        print("\nALL CARD MEDIA & DISPLAY TESTS PASSED!")
 
     asyncio.run(run_all())

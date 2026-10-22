@@ -148,6 +148,7 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             return
 
         is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+        has_file = bool(getattr(bookmark, "telegram_document_id", None))
         kb = get_bookmark_card_keyboard(
             bookmark.id,
             url=bookmark.url,
@@ -159,6 +160,7 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             photo_count=get_photo_count(bookmark),
             is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
             is_fav=is_fav,
+            has_file=has_file,
         )
         await update_card_message(callback, bookmark, kb, showing_full_text=True)
         await callback.answer()
@@ -235,6 +237,7 @@ async def cmd_random(message: Message, session: AsyncSession):
     _user_random_history[user_id] = history
 
     is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         bookmark.url,
@@ -244,6 +247,7 @@ async def cmd_random(message: Message, session: AsyncSession):
         photo_count=get_photo_count(bookmark),
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
     await send_card_message(message, message.chat.id, bookmark, kb, showing_full_text=True)
 
@@ -266,6 +270,7 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
     _user_random_history[user_id] = history
 
     is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         bookmark.url,
@@ -275,6 +280,7 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
         photo_count=get_photo_count(bookmark),
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
     await update_card_message(callback, bookmark, kb, showing_full_text=True)
     await callback.answer()
@@ -319,6 +325,7 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
 
     b = bookmarks[0]
     is_fav = any(t.name.lower() == "избранное" for t in b.tags)
+    has_file = bool(getattr(b, "telegram_document_id", None))
     kb = get_bookmark_card_keyboard(
         b.id,
         url=b.url,
@@ -331,6 +338,7 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         photo_count=get_photo_count(b),
         is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
 
     if "filter_tag:" in (callback.message.reply_markup.inline_keyboard[0][0].callback_data if callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0] else ""):

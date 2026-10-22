@@ -73,6 +73,8 @@ def build_card_text(
         header = f"📄 <b>Материал {curr} из {total}</b>\n\n"
 
     type_badge = get_content_type_badge(bookmark.content_type)
+    if getattr(bookmark, "telegram_document_id", None):
+        type_badge = "📦 Архив"
     tags_str = " ".join([f"#{html.escape(t.name)}" for t in bookmark.tags]) if bookmark.tags else ""
     status_icon = "✅ Прочитано" if bookmark.is_read else "📖 Не прочитано"
 

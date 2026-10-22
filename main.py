@@ -28,11 +28,13 @@ async def init_databases():
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS image_url TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_photo_id TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_video_id TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_document_id TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;",
         # SQLite fallback syntax (without IF NOT EXISTS):
         "ALTER TABLE bookmarks ADD COLUMN image_url TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN telegram_photo_id TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN telegram_video_id TEXT;",
+        "ALTER TABLE bookmarks ADD COLUMN telegram_document_id TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN photos_json TEXT;",
     ]
 

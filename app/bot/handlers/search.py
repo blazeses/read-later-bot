@@ -107,6 +107,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
         b = first.bookmark
         token = get_search_token(clean_q)
         is_fav = any(t.name.lower() == "избранное" for t in b.tags)
+        has_file = bool(getattr(b, "telegram_document_id", None))
         kb = get_bookmark_card_keyboard(
             b.id,
             url=b.url,
@@ -119,6 +120,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
             photo_count=get_photo_count(b),
             is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
             is_fav=is_fav,
+            has_file=has_file,
         )
 
         await send_card_message(message, message.chat.id, b, kb, showing_full_text=True, page_info=(1, total_count))
@@ -262,6 +264,7 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
     b = results[0].bookmark
     token = get_search_token(query) if query else ""
     is_fav = any(t.name.lower() == "избранное" for t in b.tags)
+    has_file = bool(getattr(b, "telegram_document_id", None))
     kb = get_bookmark_card_keyboard(
         b.id,
         url=b.url,
@@ -274,6 +277,7 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
         photo_count=get_photo_count(b),
         is_note=(b.content_type == ContentType.NOTE or bool(b.user_comment and b.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
     await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total_count))
     await callback.answer()

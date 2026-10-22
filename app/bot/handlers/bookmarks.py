@@ -9,16 +9,16 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.card_renderer import update_card_message
+from app.bot.card_renderer import send_card_message, update_card_message
 from app.bot.keyboards import get_bookmark_card_keyboard
 from app.core.config import settings
 from app.core.logger import log
 from app.db.models import ContentType
-from app.db.repositories import BookmarkRepository, TagRepository
+from app.db.repositories import BookmarkRepository, TagRepository, UserRepository
 from app.extractors.twitter import TWITTER_URL_REGEX
 from app.extractors.url_utils import extract_urls
 from app.extractors.youtube import YOUTUBE_REGEX
-from app.providers.registry import get_vector_store
+from app.providers.registry import get_embedding_provider, get_vector_store
 from app.services.ingest import IngestTask, IngestionQueueService
 
 router = Router()
@@ -282,20 +282,99 @@ async def handle_media_upload(message: Message):
         await message.answer("⚠️ Не удалось принять файл. Попробуйте отправить его ещё раз.")
 
 
-@router.message(F.document)
-async def handle_document_upload(message: Message):
-    if not ingest_service:
-        await message.answer("Сервис обработки недоступен.")
-        return
+ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"}
 
+
+@router.message(F.document)
+async def handle_document_upload(message: Message, session: AsyncSession):
     doc = message.document
     filename = doc.file_name or "document"
     ext = os.path.splitext(filename)[1].lower()
 
-    if ext not in (".pdf", ".docx", ".txt", ".md", ".markdown", ".zip"):
+    # 1. Прямое моментальное сохранение архивов (без парсинга ИИ и без скачивания на диск сервера)
+    if ext in ARCHIVE_EXTENSIONS:
+        file_size_bytes = doc.file_size or 0
+        # Telegram ограничивает загрузку файлов: 2 ГБ для обычных пользователей, 4 ГБ для Telegram Premium
+        if file_size_bytes > 4 * 1024 * 1024 * 1024:
+            await message.answer(
+                "❌ <b>Файл превышает максимальный лимит Telegram (4 ГБ).</b>\n\n"
+                "💡 <i>Telegram ограничивает отправку файлов 2 ГБ для обычных аккаунтов и 4 ГБ для Telegram Premium.\n"
+                "Чтобы сохранить архив больше 4 ГБ (например, 5–10 ГБ), разбейте его на части (тома) по 2–4 ГБ (part1.zip, part2.zip) и отправьте их в бот.</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        if file_size_bytes >= 1024 * 1024 * 1024:
+            size_str = f"{file_size_bytes / (1024 * 1024 * 1024):.2f} ГБ"
+        else:
+            size_str = f"{file_size_bytes / (1024 * 1024):.1f} МБ"
+
+        user_repo = UserRepository(session)
+        await user_repo.get_or_create(message.from_user.id)
+
+        tag_repo = TagRepository(session)
+        archive_tag = ext.lstrip(".").lower()
+        tags = await tag_repo.get_or_create_tags(message.from_user.id, ["архив", archive_tag])
+
+        caption_note = (message.caption or "").strip()
+        full_text = caption_note if caption_note else f"Файл архива сохранён в закладочник.\nИмя: {filename}\nРазмер: {size_str}"
+        summary = f"📦 Архив: {filename} ({size_str})"
+
+        bm_repo = BookmarkRepository(session)
+        bookmark = await bm_repo.create(
+            user_id=message.from_user.id,
+            content_type=ContentType.DOCUMENT,
+            url=None,
+            title=f"📦 {filename}",
+            domain="архив",
+            full_text=full_text,
+            summary=summary,
+            user_comment=caption_note if caption_note else None,
+            tags=tags,
+            reading_time_min=1,
+            telegram_document_id=doc.file_id,
+        )
+        await session.commit()
+
+        if settings.EMBEDDING_PROVIDER not in ("none", "disabled", "deepseek", "deepseek_search"):
+            try:
+                vector_store = get_vector_store()
+                embed_provider = get_embedding_provider()
+                vec = await embed_provider.embed_text(f"{filename} {summary} {caption_note}")
+                await vector_store.upsert_bookmark(
+                    user_id=message.from_user.id,
+                    bookmark_id=bookmark.id,
+                    vector=vec,
+                    metadata={"title": f"📦 {filename}", "tags": [t.name for t in tags], "url": "", "content_type": bookmark.content_type.value},
+                )
+            except Exception as emb_e:
+                log.warning(f"Vector store upsert skipped for archive: {emb_e}")
+
+        kb = get_bookmark_card_keyboard(
+            bookmark.id,
+            url=None,
+            is_read=False,
+            showing_full_text=True,
+            has_file=True,
+        )
+        await send_card_message(
+            bot_or_message=message,
+            chat_id=message.chat.id,
+            bookmark=bookmark,
+            reply_markup=kb,
+            showing_full_text=True,
+        )
+        return
+
+    # 2. Текстовые документы (PDF, DOCX, TXT, MD) - через сервис очередей Ingestion
+    if not ingest_service:
+        await message.answer("Сервис обработки недоступен.")
+        return
+
+    if ext not in (".pdf", ".docx", ".txt", ".md", ".markdown"):
         await message.answer(
             f"❌ Неподдерживаемый формат файла: {ext}\n"
-            "Поддерживаются: PDF, DOCX, TXT, MD, ZIP."
+            "Поддерживаются архивы: ZIP, RAR, 7Z, TAR, GZ, а также документы: PDF, DOCX, TXT, MD."
         )
         return
 
@@ -406,6 +485,7 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
         except Exception:
             pass
 
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
     kb = get_bookmark_card_keyboard(
         bookmark.id,
         url=bookmark.url,
@@ -418,6 +498,7 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
         photo_count=photo_count,
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
@@ -521,6 +602,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         except Exception:
             pass
 
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
     is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
     kb = get_bookmark_card_keyboard(
         bookmark.id,
@@ -534,6 +616,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         photo_count=photo_count,
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
@@ -568,6 +651,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         except Exception:
             pass
 
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
     is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
     kb = get_bookmark_card_keyboard(
         bookmark.id,
@@ -581,6 +665,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         photo_count=photo_count,
         is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
         is_fav=is_fav,
+        has_file=has_file,
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=showing_full_text, page_info=page_info)
@@ -617,3 +702,30 @@ async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Удалено")
     else:
         await callback.answer("Закладка уже удалена или не найдена.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("dl_doc:"))
+async def cb_download_document(callback: CallbackQuery, session: AsyncSession):
+    bm_id_str = callback.data.split(":")[1]
+    bookmark_id = uuid.UUID(bm_id_str)
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
+    if not bookmark or not bookmark.telegram_document_id:
+        await callback.answer("Файл архива не найден.", show_alert=True)
+        return
+
+    await callback.answer("📥 Отправляю архив...")
+    bot = callback.bot
+    try:
+        clean_title = bookmark.title or "Архив"
+        if clean_title.startswith("📦 "):
+            clean_title = clean_title[2:].strip()
+        await bot.send_document(
+            chat_id=callback.message.chat.id,
+            document=bookmark.telegram_document_id,
+            caption=f"📦 {clean_title}"[:1024],
+        )
+    except Exception as e:
+        log.exception(f"Failed to send document {bookmark.telegram_document_id}: {e}")
+        await callback.message.answer("⚠️ Не удалось отправить файл из Telegram. Возможно, файл был удалён.")
+

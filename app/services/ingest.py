@@ -137,12 +137,14 @@ class IngestionQueueService:
                         except Exception:
                             pass
                         photo_count = 1 if (existing.telegram_photo_id or existing.image_url or getattr(existing, "telegram_video_id", None)) else 0
+                        has_file = bool(getattr(existing, "telegram_document_id", None))
                         kb = get_bookmark_card_keyboard(
                             existing.id,
                             existing.url,
                             existing.is_read,
                             photo_count=photo_count,
                             is_note=(existing.content_type == ContentType.NOTE),
+                            has_file=has_file,
                         )
                         await send_card_message(self.bot, task.chat_id, existing, kb)
                         return
@@ -302,6 +304,7 @@ class IngestionQueueService:
                 photo_count = len(task.photo_ids) if task.photo_ids else (1 if (bookmark.telegram_photo_id or bookmark.image_url or bookmark.telegram_video_id) else 0)
                 is_note = (bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip()))
                 is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+                has_file = bool(getattr(bookmark, "telegram_document_id", None))
                 kb = get_bookmark_card_keyboard(
                     bookmark.id,
                     url=bookmark.url,
@@ -310,6 +313,7 @@ class IngestionQueueService:
                     photo_count=photo_count,
                     is_note=is_note,
                     is_fav=is_fav,
+                    has_file=has_file,
                 )
 
                 try:
