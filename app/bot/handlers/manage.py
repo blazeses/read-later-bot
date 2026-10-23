@@ -13,6 +13,7 @@ from app.bot.card_renderer import send_card_message, update_card_message
 from app.bot.keyboards import (
     get_bookmark_card_keyboard,
     get_bookmarks_list_keyboard,
+    get_page_picker_keyboard,
     get_tags_keyboard,
 )
 from app.core.logger import log
@@ -364,12 +365,63 @@ async def cmd_tags(message: Message, session: AsyncSession):
     await message.answer("🏷 <b>Ваши теги:</b>\nНажмите на тег, чтобы отфильтровать материалы:", reply_markup=kb, parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("jump_p:"))
+async def cb_jump_page_list(callback: CallbackQuery):
+    try:
+        parts = callback.data.split(":")
+        prefix = parts[1]
+        total_pages = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+        current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+
+        kb = get_page_picker_keyboard(
+            total_pages=total_pages,
+            current_page=current_page,
+            prefix=prefix,
+            is_card=False,
+        )
+        text = f"📄 <b>Выберите страницу (всего {total_pages}):</b>"
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        log.warning(f"Error in cb_jump_page_list: {e}")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("jump_c:"))
+async def cb_jump_page_card(callback: CallbackQuery):
+    try:
+        parts = callback.data.split(":")
+        prefix = parts[1]
+        total_pages = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+        current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+        extra_data = parts[4] if len(parts) > 4 else ""
+
+        kb = get_page_picker_keyboard(
+            total_pages=total_pages,
+            current_page=current_page,
+            prefix=prefix,
+            extra_data=extra_data,
+            is_card=True,
+        )
+        caption_text = f"📄 <b>Выберите материал (всего {total_pages}):</b>"
+        if callback.message.photo or callback.message.video or callback.message.animation:
+            await callback.message.edit_caption(caption=caption_text, reply_markup=kb, parse_mode="HTML")
+        else:
+            await callback.message.edit_text(text=caption_text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        log.warning(f"Error in cb_jump_page_card: {e}")
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("filter_tag:"))
 async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
-    # format: filter_tag:{name}:{page}
+    # format: filter_tag:{name}:{page} or filter_tag:{page}:{name}
     parts = callback.data.split(":")
-    tag_name = parts[1]
-    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    if len(parts) >= 3 and parts[1].isdigit():
+        page = int(parts[1])
+        tag_name = parts[2]
+    else:
+        tag_name = parts[1]
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
     limit = 1
     offset = (page - 1) * limit
 
@@ -404,7 +456,8 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         is_pinned=getattr(b, "is_pinned", False),
     )
 
-    if "filter_tag:" in (callback.message.reply_markup.inline_keyboard[0][0].callback_data if callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0] else ""):
+    first_cb = callback.message.reply_markup.inline_keyboard[0][0].callback_data if (callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0]) else ""
+    if "filter_tag:" in first_cb or "jump_c:" in first_cb:
         await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total))
     else:
         await send_card_message(callback.message, callback.message.chat.id, b, kb, showing_full_text=True, page_info=(page, total))

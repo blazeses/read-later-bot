@@ -83,7 +83,7 @@ def get_bookmark_card_keyboard(
         nav_buttons.append(
             InlineKeyboardButton(
                 text=f"{current_page} / {total_pages}",
-                callback_data="noop",
+                callback_data=make_safe_callback("jump_c", nav_prefix, total_pages, current_page, extra_data or "_"),
             )
         )
         if current_page < total_pages:
@@ -218,7 +218,7 @@ def get_bookmarks_list_keyboard(
         nav_buttons.append(
             InlineKeyboardButton(
                 text=f"{current_page} / {total_pages}",
-                callback_data="noop",
+                callback_data=f"jump_p:{prefix}:{total_pages}:{current_page}",
             )
         )
         if current_page < total_pages:
@@ -253,4 +253,51 @@ def get_tags_keyboard(tags_with_counts: List[Tuple[str, int]]) -> InlineKeyboard
             callback_data=f"filter_tag:{safe_name}:1",
         )
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def get_page_picker_keyboard(
+    total_pages: int,
+    current_page: int,
+    prefix: str,
+    extra_data: str = "",
+    is_card: bool = False,
+) -> InlineKeyboardMarkup:
+    """Inline keyboard for jumping directly to a selected page."""
+    builder = InlineKeyboardBuilder()
+
+    if total_pages <= 25:
+        pages = list(range(1, total_pages + 1))
+    else:
+        step = 5 if total_pages <= 60 else 10
+        page_set = {1, total_pages}
+        for p in range(current_page - 3, current_page + 4):
+            if 1 <= p <= total_pages:
+                page_set.add(p)
+        for p in range(step, total_pages, step):
+            page_set.add(p)
+        pages = sorted(page_set)
+
+    for p in pages:
+        text = f"• {p} •" if p == current_page else str(p)
+        if is_card:
+            if prefix == "filter_tag":
+                cb = make_safe_callback("filter_tag", extra_data, p)
+            else:
+                cb = make_safe_callback(prefix, p, extra_data if extra_data != "_" else None)
+        else:
+            cb = f"{prefix}:{p}"
+        builder.button(text=text, callback_data=cb)
+
+    builder.adjust(5)
+
+    if is_card:
+        if prefix == "filter_tag":
+            cancel_cb = make_safe_callback("filter_tag", extra_data, current_page)
+        else:
+            cancel_cb = make_safe_callback(prefix, current_page, extra_data if extra_data != "_" else None)
+    else:
+        cancel_cb = f"{prefix}:{current_page}"
+
+    builder.row(InlineKeyboardButton(text="« Отмена", callback_data=cancel_cb))
     return builder.as_markup()
