@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # Content Ingestion & Security
     MAX_FILE_SIZE_MB: int = Field(default=20, description="Max allowed file size for downloads in MB")
-    MAX_TEXT_LENGTH: int = Field(default=150_000, description="Max character length of article text to process")
+    MAX_TEXT_LENGTH: int = Field(default=500_000, description="Max character length of article text to process")
     REQUEST_TIMEOUT_SECONDS: int = Field(default=15, description="Timeout for web page downloads")
     MAX_REDIRECTS: int = Field(default=5, description="Max redirects allowed when fetching URLs")
     USER_AGENT: str = Field(

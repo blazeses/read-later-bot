@@ -25,6 +25,7 @@ from app.providers.registry import (
 )
 from app.services.chunker import chunker
 from app.services.embedding_service import EmbeddingService
+from app.bot.card_renderer import check_is_long_note
 
 
 @dataclass
@@ -41,6 +42,7 @@ class IngestTask:
     photo_ids: Optional[list[str]] = None
     author: Optional[str] = None
     url: Optional[str] = None
+    telegram_document_id: Optional[str] = None
 
 
 class IngestionQueueService:
@@ -277,6 +279,7 @@ class IngestionQueueService:
                     image_url=extracted.image_url,
                     telegram_photo_id=extracted.telegram_photo_id or task.telegram_photo_id,
                     telegram_video_id=extracted.telegram_video_id or task.telegram_video_id,
+                    telegram_document_id=task.telegram_document_id,
                     photos_json=photos_json,
                 )
                 await session.commit()
@@ -316,6 +319,7 @@ class IngestionQueueService:
                     is_fav=is_fav,
                     has_file=has_file,
                     is_pinned=getattr(bookmark, "is_pinned", False),
+                    is_long_note=check_is_long_note(bookmark),
                 )
 
                 try:

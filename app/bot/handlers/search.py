@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.card_renderer import send_card_message, update_card_message
+from app.bot.card_renderer import check_is_long_note, send_card_message, update_card_message
 from app.bot.keyboards import get_bookmark_card_keyboard, get_main_reply_keyboard
 from app.core.config import settings
 from app.core.logger import log
@@ -122,6 +122,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
             is_fav=is_fav,
             has_file=has_file,
             is_pinned=getattr(b, "is_pinned", False),
+            is_long_note=check_is_long_note(b),
         )
 
         await send_card_message(message, message.chat.id, b, kb, showing_full_text=True, page_info=(1, total_count))
@@ -280,6 +281,7 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(b, "is_pinned", False),
+        is_long_note=check_is_long_note(b),
     )
     await update_card_message(callback, b, kb, showing_full_text=True, page_info=(page, total_count))
     await callback.answer()

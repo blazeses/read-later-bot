@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.card_renderer import send_card_message, update_card_message
+from app.bot.card_renderer import check_is_long_note, send_card_message, update_card_message
 from app.bot.keyboards import get_bookmark_card_keyboard
 from app.core.config import settings
 from app.core.logger import log
@@ -402,6 +402,7 @@ async def handle_document_upload(message: Message, session: AsyncSession):
         content_type=ContentType.DOCUMENT,
         filename=filename,
         user_comment=message.caption,
+        telegram_document_id=doc.file_id,
     )
     await ingest_service.enqueue(task)
 
@@ -502,6 +503,7 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
@@ -621,6 +623,7 @@ async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
@@ -671,6 +674,7 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=showing_full_text, page_info=page_info)
@@ -779,6 +783,7 @@ async def cb_toggle_pin(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=is_pinned,
+        is_long_note=check_is_long_note(bookmark),
     )
     page_info = (current_page, total_pages) if total_pages > 1 else None
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)

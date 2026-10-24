@@ -59,6 +59,7 @@ def get_bookmark_card_keyboard(
     is_fav: bool = False,
     has_file: bool = False,
     is_pinned: bool = False,
+    is_long_note: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for bookmark cards with action buttons:
@@ -114,11 +115,26 @@ def get_bookmark_card_keyboard(
     # 3. Read status and In-place text toggle (strictly <= 64 bytes)
     status_text = "📖 В непрочитанные" if is_read else "✅ Прочитано"
     status_cb = make_safe_callback("toggle_read", bookmark_id, np_safe, current_page, total_pages, ex_safe)
+    remind_cb = make_safe_callback("remind_menu", bookmark_id)
+    delete_cb = make_safe_callback("delete", bookmark_id)
 
     if is_note:
+        edit_note_cb = make_safe_callback("edit_note", bookmark_id)
         builder.row(
             InlineKeyboardButton(text=status_text, callback_data=status_cb),
+            InlineKeyboardButton(text="✏️ Редактировать", callback_data=edit_note_cb),
+        )
+        if is_long_note:
+            full_note_cb = make_safe_callback("full_note", bookmark_id)
+            builder.row(
+                InlineKeyboardButton(text="📖 Читать полностью", callback_data=full_note_cb),
+            )
+        builder.row(
             InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
+            InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
+        )
+        builder.row(
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
         )
     else:
         view_text_mode = 0 if showing_full_text else 1
@@ -128,16 +144,6 @@ def get_bookmark_card_keyboard(
             InlineKeyboardButton(text=status_text, callback_data=status_cb),
             InlineKeyboardButton(text=view_label, callback_data=toggle_view_cb),
         )
-
-    # 4. Remind & Delete / Tag change
-    remind_cb = make_safe_callback("remind_menu", bookmark_id)
-    delete_cb = make_safe_callback("delete", bookmark_id)
-    if is_note:
-        builder.row(
-            InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
-        )
-    else:
         builder.row(
             InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
             InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),

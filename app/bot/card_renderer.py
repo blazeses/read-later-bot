@@ -30,6 +30,14 @@ def strip_html_tags(text: str) -> str:
     return html.unescape(clean)
 
 
+def check_is_long_note(bookmark: Bookmark) -> bool:
+    has_media = bool(bookmark.telegram_photo_id or getattr(bookmark, "telegram_video_id", None))
+    limit = 750 if has_media else 3500
+    text_len = len(bookmark.full_text or "")
+    comm_len = len(bookmark.user_comment or "")
+    return text_len > limit or comm_len > limit
+
+
 async def _try_edit_caption(msg, caption_html: str, caption_plain: str, reply_markup) -> bool:
     """Меняет только подпись. True — если сообщение обновлено (или уже было таким)."""
     try:
@@ -107,9 +115,9 @@ def build_card_text(
         show_title = bool(title_raw and not note_body.startswith(title_raw.rstrip(".")))
         title_block = f"📌 <b>{html.escape(title_raw)}</b>\n\n" if show_title else ""
 
-        limit = 800 if for_caption else 3800
+        limit = 750 if for_caption else 3500
         if len(note_body) > limit:
-            note_body = note_body[:limit] + "..."
+            note_body = note_body[:limit] + "...\n\n<i>(заметка длинная, нажмите «📖 Читать полностью» ниже)</i>"
 
         content_block = f"💬 <b>Заметка:</b>\n{html.escape(note_body)}"
 
@@ -131,7 +139,7 @@ def build_card_text(
             comment_body = bookmark.user_comment.strip()
             limit = 650 if for_caption else 3300
             if len(comment_body) > limit:
-                comment_body = comment_body[:limit] + "..."
+                comment_body = comment_body[:limit] + "...\n\n<i>(заметка длинная, нажмите «📖 Читать полностью» ниже)</i>"
 
             if showing_full_text:
                 content_block = f"💬 <b>Заметка:</b>\n{html.escape(comment_body)}"

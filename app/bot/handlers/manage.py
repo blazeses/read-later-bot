@@ -1,24 +1,28 @@
 import html
 import json
 import math
+import os
 import uuid
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.card_renderer import send_card_message, update_card_message
+from app.bot.card_renderer import check_is_long_note, send_card_message, update_card_message
 from app.bot.keyboards import (
     get_bookmark_card_keyboard,
     get_bookmarks_list_keyboard,
     get_page_picker_keyboard,
     get_tags_keyboard,
 )
+from app.core.config import settings
 from app.core.logger import log
 from app.db.models import Bookmark, ContentType
 from app.db.repositories import BookmarkRepository, TagRepository
+from app.extractors.url_utils import normalize_emoji_digits
 
 router = Router()
 
@@ -28,6 +32,10 @@ _user_random_history: dict[int, list[uuid.UUID]] = {}
 
 class TagEditState(StatesGroup):
     waiting_for_tags = State()
+
+
+class NoteEditState(StatesGroup):
+    waiting_for_text = State()
 
 
 def get_photo_count(b: Bookmark) -> int:
@@ -170,6 +178,7 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
             is_fav=is_fav,
             has_file=has_file,
             is_pinned=getattr(bookmark, "is_pinned", False),
+            is_long_note=check_is_long_note(bookmark),
         )
         await update_card_message(callback, bookmark, kb, showing_full_text=True)
         await callback.answer()
@@ -310,6 +319,7 @@ async def cmd_random(message: Message, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
     )
     await send_card_message(message, message.chat.id, bookmark, kb, showing_full_text=True)
 
@@ -344,6 +354,7 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
     )
     await update_card_message(callback, bookmark, kb, showing_full_text=True)
     await callback.answer()
@@ -454,6 +465,7 @@ async def cb_filter_tag(callback: CallbackQuery, session: AsyncSession):
         is_fav=is_fav,
         has_file=has_file,
         is_pinned=getattr(b, "is_pinned", False),
+        is_long_note=check_is_long_note(b),
     )
 
     first_cb = callback.message.reply_markup.inline_keyboard[0][0].callback_data if (callback.message.reply_markup and callback.message.reply_markup.inline_keyboard and callback.message.reply_markup.inline_keyboard[0]) else ""
@@ -511,3 +523,167 @@ async def process_new_tags(message: Message, state: FSMContext, session: AsyncSe
         await message.answer(f"✅ Теги обновлены: {tags_str}")
     else:
         await message.answer("Не удалось обновить теги для этой закладки.")
+
+
+# --- Note Editing & Full View ---
+
+@router.callback_query(F.data.startswith("edit_note:"))
+async def cb_edit_note(callback: CallbackQuery, state: FSMContext):
+    bookmark_id_str = callback.data.split(":")[1]
+    await state.update_data(bookmark_id=bookmark_id_str)
+    await state.set_state(NoteEditState.waiting_for_text)
+
+    await callback.message.answer(
+        "✏️ <b>Редактирование заметки:</b>\n\n"
+        "Отправьте новый текст заметки следующим сообщением.\n"
+        "<i>(Вы можете отправить текст любой длины или прикрепить текстовый файл .txt / .md, либо отправить /cancel для отмены)</i>",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(StateFilter(NoteEditState.waiting_for_text))
+async def process_new_note_text(message: Message, state: FSMContext, session: AsyncSession):
+    from app.bot.handlers.bookmarks import MENU_BUTTON_TEXTS
+    raw_text = (message.text or message.caption or "").strip()
+
+    if raw_text in ("/cancel", "/start") or raw_text in MENU_BUTTON_TEXTS:
+        await state.clear()
+        await message.answer("Редактирование заметки отменено.")
+        return
+
+    text = raw_text
+    # If the user uploaded a text document (.txt, .md, .text) as the new text
+    if message.document:
+        doc = message.document
+        ext = os.path.splitext(doc.file_name or "")[1].lower()
+        if ext in (".txt", ".md", ".text", ".markdown"):
+            try:
+                import tempfile
+                file_info = await message.bot.get_file(doc.file_id)
+                temp_path = os.path.join(tempfile.gettempdir(), f"{uuid.uuid4()}_{doc.file_name}")
+                await message.bot.download_file(file_info.file_path, destination=temp_path)
+                with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
+                    file_text = f.read().strip()
+                if file_text:
+                    text = file_text
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            except Exception as e:
+                log.warning(f"Error reading doc in note edit: {e}")
+
+    if not text:
+        await message.answer("⚠️ Текст заметки не может быть пустым. Отправьте текст или /cancel для отмены.")
+        return
+
+    data = await state.get_data()
+    bookmark_id_str = data.get("bookmark_id")
+    await state.clear()
+
+    if not bookmark_id_str:
+        await message.answer("Сессия редактирования устарела.")
+        return
+
+    bookmark_id = uuid.UUID(bookmark_id_str)
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, message.from_user.id)
+    if not bookmark:
+        await message.answer("Заметка не найдена.")
+        return
+
+    clean_text = normalize_emoji_digits(text)
+    lines = [line.strip() for line in clean_text.split("\n") if line.strip()]
+    default_label = "Видео-заметка" if getattr(bookmark, "telegram_video_id", None) else ("Фото-заметка" if bookmark.telegram_photo_id else "Заметка")
+    new_title = lines[0][:80] if lines else default_label
+    if len(new_title) == 80:
+        new_title += "..."
+
+    bookmark.full_text = clean_text
+    bookmark.summary = clean_text
+    bookmark.title = new_title
+    if bookmark.user_comment:
+        bookmark.user_comment = clean_text
+
+    try:
+        text_for_search = f"{new_title} {clean_text[:5000]}"
+        bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
+    except Exception:
+        pass
+
+    await session.commit()
+
+    if settings.EMBEDDING_PROVIDER not in ("none", "disabled", "deepseek", "deepseek_search"):
+        try:
+            from app.providers.registry import get_embedding_provider, get_vector_store
+            vector_store = get_vector_store()
+            embed_provider = get_embedding_provider()
+            vec = await embed_provider.embed_text(f"{new_title} {clean_text[:5000]}")
+            await vector_store.upsert_bookmark(
+                user_id=message.from_user.id,
+                bookmark_id=bookmark.id,
+                vector=vec,
+                metadata={"title": new_title, "tags": [t.name for t in bookmark.tags], "url": "", "content_type": bookmark.content_type.value},
+            )
+        except Exception as emb_e:
+            log.warning(f"Vector store update skipped: {emb_e}")
+
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
+    kb = get_bookmark_card_keyboard(
+        bookmark.id,
+        url=bookmark.url,
+        is_read=bookmark.is_read,
+        showing_full_text=True,
+        nav_prefix="rl",
+        current_page=1,
+        total_pages=1,
+        photo_count=get_photo_count(bookmark),
+        is_note=True,
+        is_fav=is_fav,
+        has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
+    )
+    await message.answer("✅ <b>Заметка успешно обновлена!</b>", parse_mode="HTML")
+    await send_card_message(message, message.chat.id, bookmark, kb, showing_full_text=True)
+
+
+@router.callback_query(F.data.startswith("full_note:"))
+async def cb_view_full_note(callback: CallbackQuery, session: AsyncSession):
+    bookmark_id_str = callback.data.split(":")[1]
+    bookmark_id = uuid.UUID(bookmark_id_str)
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
+    if not bookmark:
+        await callback.answer("Заметка не найдена.", show_alert=True)
+        return
+
+    full_text = (bookmark.full_text or bookmark.summary or bookmark.user_comment or "").strip()
+    if not full_text:
+        await callback.answer("Текст заметки пуст.", show_alert=True)
+        return
+
+    if len(full_text) <= 3900:
+        await callback.message.answer(
+            f"📖 <b>Полный текст заметки:</b>\n\n{html.escape(full_text)}",
+            parse_mode="HTML",
+        )
+    else:
+        file_bytes = full_text.encode("utf-8")
+        raw_title = bookmark.title or "note"
+        clean_name = "".join(c for c in raw_title if c.isalnum() or c in (" ", "_", "-")).strip()[:30]
+        filename = f"{clean_name or 'note'}.txt"
+        input_file = BufferedInputFile(file_bytes, filename=filename)
+
+        preview_text = full_text[:1500] + "\n\n<i>... [весь текст прикреплен файлом ниже]</i>"
+        await callback.message.answer(
+            f"📖 <b>Полный текст заметки ({len(full_text):,} симв.):</b>\n\n{html.escape(preview_text)}",
+            parse_mode="HTML",
+        )
+        await callback.message.answer_document(
+            document=input_file,
+            caption=f"📄 Полная заметка: {filename} ({len(file_bytes) / 1024:.1f} КБ)",
+        )
+    await callback.answer()

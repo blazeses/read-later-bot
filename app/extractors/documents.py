@@ -64,18 +64,19 @@ class DocumentExtractor(BaseExtractor):
                 error_message=f"Ошибка парсинга документа: {str(e)[:100]}",
             )
 
-        if len(text) > settings.MAX_TEXT_LENGTH:
+        is_text_note = ext in (".txt", ".md", ".markdown", ".rst")
+        if not is_text_note and len(text) > settings.MAX_TEXT_LENGTH:
             text = text[:settings.MAX_TEXT_LENGTH] + "\n\n... [текст документа обрезан]"
 
-        has_text = bool(text and len(text.strip()) >= 20)
+        has_text = bool(text and len(text.strip()) >= 5)
         return ExtractedContent(
             title=title,
             author=author,
             date=None,
             text=text if has_text else "",
             language=None,
-            domain="file",
-            content_type=ContentType.DOCUMENT,
+            domain="note" if is_text_note else "file",
+            content_type=ContentType.NOTE if is_text_note else ContentType.DOCUMENT,
             url=None,
             success=has_text,
             error_message=None if has_text else "Не удалось извлечь печатный текст из файла (возможно, скан без OCR).",
