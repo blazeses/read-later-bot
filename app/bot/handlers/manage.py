@@ -56,9 +56,12 @@ def render_bookmarks_list(
     limit: int = PAGE_SIZE,
     is_unread_only: bool = False,
     is_pinned_only: bool = False,
+    is_favorites_only: bool = False,
 ) -> str:
     total_pages = max(1, math.ceil(total_count / limit))
-    if is_pinned_only:
+    if is_favorites_only:
+        title_header = "⭐ <b>Избранные заметки и материалы</b>"
+    elif is_pinned_only:
         title_header = "📌 <b>Закреплённые материалы</b>"
     elif is_unread_only:
         title_header = "📖 <b>Непрочитанные материалы</b>"
@@ -284,6 +287,69 @@ async def cb_pinned_list(callback: CallbackQuery, session: AsyncSession):
             await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     await callback.answer()
 
+
+# --- Favorites Articles and Notes with Direct Selection ---
+
+@router.message(Command("favorites"))
+@router.message(Command("fav"))
+@router.message(Command("избранное"))
+@router.message(F.text.in_({"⭐ Избранное", "Избранное", "избранное"}))
+async def cmd_favorites(message: Message, session: AsyncSession):
+    repo = BookmarkRepository(session)
+    bookmarks, total = await repo.list_bookmarks(
+        user_id=message.from_user.id,
+        tag_name="избранное",
+        limit=PAGE_SIZE,
+        offset=0,
+    )
+
+    if not bookmarks:
+        await message.answer(
+            "⭐ <b>У вас пока нет избранных заметок и материалов.</b>\n\n"
+            "Чтобы добавить заметку или статью в избранное, откройте её и нажмите кнопку <b>«⭐ В избранное»</b>.\n\n"
+            "Вы также можете закреплять самые важные избранные заметки кнопкой <b>«📌 Закрепить»</b>, и они всегда будут на первом месте в этом меню!",
+            parse_mode="HTML",
+        )
+        return
+
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    text = render_bookmarks_list(bookmarks, current_page=1, total_count=total, limit=PAGE_SIZE, is_favorites_only=True)
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="fl")
+    await message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("fl:") | F.data.startswith("fav_list:"))
+async def cb_favorites_list(callback: CallbackQuery, session: AsyncSession):
+    page = int(callback.data.split(":")[1])
+    offset = (page - 1) * PAGE_SIZE
+    repo = BookmarkRepository(session)
+    bookmarks, total = await repo.list_bookmarks(
+        user_id=callback.from_user.id,
+        tag_name="избранное",
+        limit=PAGE_SIZE,
+        offset=offset,
+    )
+
+    if not bookmarks:
+        await callback.answer("Избранных материалов нет.", show_alert=True)
+        return
+
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_favorites_only=True)
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="fl")
+
+    if callback.message.photo or callback.message.video or callback.message.animation:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        try:
+            await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+    await callback.answer()
 
 
 # --- Smart Random Without Consecutive Repeats ---

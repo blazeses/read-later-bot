@@ -213,6 +213,14 @@ async def process_search_query_state(message: Message, state: FSMContext, sessio
         from app.bot.handlers.manage import cmd_recent
         await cmd_recent(message, session)
         return
+    elif text in ("⭐ Избранное", "Избранное"):
+        from app.bot.handlers.manage import cmd_favorites
+        await cmd_favorites(message, session)
+        return
+    elif text in ("📌 Закрепленные", "Закрепленные", "📌 Закреплённые", "Закреплённые"):
+        from app.bot.handlers.manage import cmd_pinned
+        await cmd_pinned(message, session)
+        return
     elif text in ("➕ Загрузить заметку", "Загрузить заметку", "➕ Добавить заметку", "Добавить заметку", "➕ Добавить статью"):
         from app.bot.handlers.base import btn_upload_note
         await btn_upload_note(message)

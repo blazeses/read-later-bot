@@ -14,17 +14,18 @@ def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.row(
         KeyboardButton(text="📥 Мои закладки"),
+        KeyboardButton(text="⭐ Избранное"),
+    )
+    builder.row(
         KeyboardButton(text="🔍 Поиск"),
-    )
-    builder.row(
         KeyboardButton(text="➕ Загрузить заметку"),
+    )
+    builder.row(
         KeyboardButton(text="📊 Дайджест"),
-    )
-    builder.row(
         KeyboardButton(text="⚙️ Настройки"),
-        KeyboardButton(text="❓ Помощь"),
     )
     builder.row(
+        KeyboardButton(text="❓ Помощь"),
         KeyboardButton(text="🔽 Скрыть меню"),
     )
     return builder.as_markup(resize_keyboard=True, is_persistent=False)
@@ -164,7 +165,7 @@ def get_bookmark_card_keyboard(
         builder.row(*ext_row)
 
     # 6. Back to list, tags, or Next Random button
-    if nav_prefix in ("rl", "recent_list", "ul", "unread_list", "pl", "pinned_list"):
+    if nav_prefix in ("rl", "recent_list", "ul", "unread_list", "pl", "pinned_list", "fl", "fav_list"):
         builder.row(
             InlineKeyboardButton(
                 text="« 📋 К списку",
@@ -236,14 +237,40 @@ def get_bookmarks_list_keyboard(
             )
         builder.row(*nav_buttons)
 
-    if prefix in ("rl", "recent_list"):
+    if prefix in ("fl", "fav_list"):
+        builder.row(
+            InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1"),
+            InlineKeyboardButton(text="📌 Закрепленные", callback_data="pl:1"),
+        )
+        builder.row(
+            InlineKeyboardButton(text="📖 Непрочитанные", callback_data="ul:1"),
+            InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
+        )
+    elif prefix in ("rl", "recent_list"):
+        builder.row(
+            InlineKeyboardButton(text="⭐ Избранное", callback_data="fl:1"),
+            InlineKeyboardButton(text="📌 Закрепленные", callback_data="pl:1"),
+        )
         builder.row(
             InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
+    elif prefix in ("pl", "pinned_list"):
+        builder.row(
+            InlineKeyboardButton(text="⭐ Избранное", callback_data="fl:1"),
+            InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1"),
+        )
+        builder.row(
+            InlineKeyboardButton(text="📖 Непрочитанные", callback_data="ul:1"),
+            InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
+        )
     elif prefix in ("ul", "unread_list"):
         builder.row(
+            InlineKeyboardButton(text="⭐ Избранное", callback_data="fl:1"),
             InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1"),
+        )
+        builder.row(
+            InlineKeyboardButton(text="📌 Закрепленные", callback_data="pl:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
 
