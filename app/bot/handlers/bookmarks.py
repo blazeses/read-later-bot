@@ -6,7 +6,7 @@ import tempfile
 import uuid
 from typing import Optional
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.card_renderer import check_is_long_note, send_card_message, update_card_message
@@ -200,7 +200,16 @@ async def handle_media_upload(message: Message):
             elif messages[0].animation and messages[0].animation.thumbnail:
                 primary_photo_id = messages[0].animation.thumbnail.file_id
 
-        all_media_ids = photo_ids or video_ids or anim_ids
+        all_media_items = []
+        for m in messages:
+            if m.photo:
+                all_media_items.append({"type": "photo", "id": m.photo[-1].file_id})
+            elif m.video:
+                all_media_items.append({"type": "video", "id": m.video.file_id})
+            elif m.animation:
+                all_media_items.append({"type": "video", "id": m.animation.file_id})
+
+        all_media_ids = all_media_items if all_media_items else (photo_ids or video_ids or anim_ids)
 
         caption = ""
         caption_entities = None
@@ -558,23 +567,76 @@ async def cb_show_album(callback: CallbackQuery, session: AsyncSession):
     repo = BookmarkRepository(session)
     bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
     if not bookmark or not bookmark.photos_json:
-        await callback.answer("Фотографии не найдены.", show_alert=True)
+        await callback.answer("Медиафайлы не найдены.", show_alert=True)
         return
 
     try:
         photos = json.loads(bookmark.photos_json)
         if not isinstance(photos, list) or not photos:
-            await callback.answer("Фотографии не найдены.", show_alert=True)
+            await callback.answer("Медиафайлы не найдены.", show_alert=True)
             return
 
-        media_group = [InputMediaPhoto(media=pid) for pid in photos[:10]]
-        await callback.message.bot.send_media_group(
-            chat_id=callback.message.chat.id,
-            media=media_group,
-        )
-        await callback.answer(f"Отправлено {len(media_group)} фото")
+        media_items: list[tuple[str, str]] = []
+        for item in photos[:10]:
+            if isinstance(item, dict):
+                m_type = item.get("type", "photo")
+                m_id = str(item.get("id", ""))
+            else:
+                m_id = str(item)
+                if bookmark.telegram_video_id and (m_id == bookmark.telegram_video_id or not bookmark.telegram_photo_id):
+                    m_type = "video"
+                else:
+                    m_type = "photo"
+            if m_id:
+                media_items.append((m_type, m_id))
+
+        if not media_items:
+            await callback.answer("Медиафайлы не найдены.", show_alert=True)
+            return
+
+        # 1. Попытка отправки как медиагруппа с точными типами (фото / видео)
+        media_group = []
+        for m_type, m_id in media_items:
+            if m_type == "video":
+                media_group.append(InputMediaVideo(media=m_id))
+            else:
+                media_group.append(InputMediaPhoto(media=m_id))
+
+        try:
+            await callback.message.bot.send_media_group(
+                chat_id=callback.message.chat.id,
+                media=media_group,
+            )
+            await callback.answer(f"Отправлено {len(media_group)} медиафайлов")
+            return
+        except Exception as group_err:
+            log.warning(f"send_media_group failed: {group_err}. Retrying individually...")
+
+        # 2. Надёжный фоллбэк: поштучная отправка каждого файла
+        sent_count = 0
+        for m_type, m_id in media_items:
+            try:
+                if m_type == "video":
+                    await callback.message.bot.send_video(chat_id=callback.message.chat.id, video=m_id)
+                else:
+                    await callback.message.bot.send_photo(chat_id=callback.message.chat.id, photo=m_id)
+                sent_count += 1
+            except Exception as e1:
+                try:
+                    if m_type == "video":
+                        await callback.message.bot.send_photo(chat_id=callback.message.chat.id, photo=m_id)
+                    else:
+                        await callback.message.bot.send_video(chat_id=callback.message.chat.id, video=m_id)
+                    sent_count += 1
+                except Exception as e2:
+                    log.warning(f"Failed to send individual media {m_id}: {e1} / {e2}")
+
+        if sent_count > 0:
+            await callback.answer(f"Отправлено {sent_count} медиафайлов")
+        else:
+            await callback.answer("Не удалось отправить медиафайлы.", show_alert=True)
     except Exception as e:
-        log.warning(f"Failed to send album: {e}")
+        log.warning(f"Failed to process album: {e}")
         await callback.answer("Ошибка при отправке альбома.", show_alert=True)
 
 

@@ -159,7 +159,7 @@ def get_bookmark_card_keyboard(
     if url and url.startswith("http"):
         ext_row.append(InlineKeyboardButton(text="🌐 Оригинал", url=url))
     if photo_count > 1:
-        ext_row.append(InlineKeyboardButton(text=f"🖼 Все фото ({photo_count})", callback_data=make_safe_callback("show_album", bookmark_id)))
+        ext_row.append(InlineKeyboardButton(text=f"📁 Альбом ({photo_count})", callback_data=make_safe_callback("show_album", bookmark_id)))
     if ext_row:
         builder.row(*ext_row)
 
