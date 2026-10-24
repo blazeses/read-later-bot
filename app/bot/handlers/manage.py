@@ -7,7 +7,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -533,12 +533,27 @@ async def cb_edit_note(callback: CallbackQuery, state: FSMContext):
     await state.update_data(bookmark_id=bookmark_id_str)
     await state.set_state(NoteEditState.waiting_for_text)
 
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit_note")]]
+    )
+
     await callback.message.answer(
         "✏️ <b>Редактирование заметки:</b>\n\n"
         "Отправьте новый текст заметки следующим сообщением.\n"
-        "<i>(Вы можете отправить текст любой длины или прикрепить текстовый файл .txt / .md, либо отправить /cancel для отмены)</i>",
+        "<i>(Вы можете отправить текст любой длины или прикрепить текстовый файл .txt / .md, либо нажать «Отмена»)</i>",
+        reply_markup=cancel_kb,
         parse_mode="HTML",
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_edit_note")
+async def cb_cancel_edit_note(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.edit_text("❌ Редактирование заметки отменено.")
+    except Exception:
+        await callback.message.answer("❌ Редактирование заметки отменено.")
     await callback.answer()
 
 

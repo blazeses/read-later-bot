@@ -162,8 +162,16 @@ async def cb_open_tags_menu(callback: CallbackQuery, session: AsyncSession):
 
 @router.message(Command("cancel"))
 async def cmd_cancel_search(message: Message, state: FSMContext):
+    current_state = await state.get_state()
     await state.clear()
-    await message.answer("Поиск отменен.", reply_markup=get_main_reply_keyboard())
+    if current_state and "NoteEditState" in current_state:
+        await message.answer("Редактирование заметки отменено.", reply_markup=get_main_reply_keyboard())
+    elif current_state and "TagEditState" in current_state:
+        await message.answer("Редактирование тегов отменено.", reply_markup=get_main_reply_keyboard())
+    elif current_state and "SearchState" in current_state:
+        await message.answer("Поиск отменен.", reply_markup=get_main_reply_keyboard())
+    else:
+        await message.answer("Действие отменено.", reply_markup=get_main_reply_keyboard())
 
 
 @router.message(F.text.in_({"🔍 Поиск", "Поиск"}))
