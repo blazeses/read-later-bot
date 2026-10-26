@@ -46,8 +46,37 @@ except ImportError:
     mock_types.InlineKeyboardButton = InlineKeyboardButton
     mock_types.InlineKeyboardMarkup = InlineKeyboardMarkup
     mock_types.InlineKeyboardBuilder = InlineKeyboardBuilder
-    sys.modules["aiogram"] = MagicMock()
+    mock_aiogram = MagicMock()
+    sys.modules["aiogram"] = mock_aiogram
     sys.modules["aiogram.types"] = mock_types
+    sys.modules["aiogram.filters"] = MagicMock()
+    sys.modules["aiogram.fsm"] = MagicMock()
+    sys.modules["aiogram.fsm.context"] = MagicMock()
+    sys.modules["aiogram.fsm.state"] = MagicMock()
+    sys.modules["sqlalchemy"] = MagicMock()
+    sys.modules["sqlalchemy.ext"] = MagicMock()
+    sys.modules["sqlalchemy.ext.asyncio"] = MagicMock()
+    sys.modules["sqlalchemy.orm"] = MagicMock()
+    sys.modules["pydantic"] = MagicMock()
+    sys.modules["pydantic_settings"] = MagicMock()
+    sys.modules["httpx"] = MagicMock()
+    sys.modules["bs4"] = MagicMock()
+    sys.modules["aiofiles"] = MagicMock()
+    mock_yta = MagicMock()
+    sys.modules["youtube_transcript_api"] = mock_yta
+    sys.modules["youtube_transcript_api._errors"] = MagicMock()
+    sys.modules["openai"] = MagicMock()
+    sys.modules["anthropic"] = MagicMock()
+    sys.modules["google"] = MagicMock()
+    sys.modules["google.generativeai"] = MagicMock()
+    sys.modules["qdrant_client"] = MagicMock()
+    sys.modules["trafilatura"] = MagicMock()
+    sys.modules["pdfplumber"] = MagicMock()
+    sys.modules["pypdf"] = MagicMock()
+    sys.modules["readability"] = MagicMock()
+    sys.modules["newspaper"] = MagicMock()
+    sys.modules["app.providers.registry"] = MagicMock()
+    sys.modules["app.core.config"] = MagicMock()
     mock_builder = MagicMock()
     mock_builder.InlineKeyboardBuilder = InlineKeyboardBuilder
     sys.modules["aiogram.utils"] = MagicMock()
@@ -66,11 +95,12 @@ if "app.db.models" not in sys.modules:
     mock_models.ContentType = ContentType
     sys.modules["app.db.models"] = mock_models
 
-from app.bot.keyboards import get_bookmark_card_keyboard
+from app.bot.keyboards import get_bookmark_card_keyboard, get_video_quality_keyboard
 from app.services.video_downloader import (
     _find_ffmpeg,
     format_duration,
     is_video_url,
+    split_video_into_parts,
 )
 
 
@@ -195,10 +225,120 @@ async def test_video_extractor():
     print("test_video_extractor passed!")
 
 
+def test_video_quality_keyboard():
+    """Test the video quality picker keyboard buttons and callbacks."""
+    bm_id = uuid.uuid4()
+    kb = get_video_quality_keyboard(bm_id)
+    all_buttons = [btn for row in kb.inline_keyboard for btn in row]
+    btn_texts = [b.text for b in all_buttons]
+    btn_cbs = [b.callback_data for b in all_buttons if b.callback_data]
+
+    assert "💎 4K (2160p)" in btn_texts
+    assert "🎬 2K (1440p)" in btn_texts
+    assert "🎬 1080p (Full HD)" in btn_texts
+    assert "🎬 720p (HD)" in btn_texts
+    assert "🎬 480p (SD)" in btn_texts
+    assert "🎬 360p (Эконом)" in btn_texts
+    assert "« Назад к карточке" in btn_texts
+
+    for cb in btn_cbs:
+        assert len(cb.encode("utf-8")) <= 64, f"Callback {cb} exceeds 64 bytes"
+        assert cb.startswith("yq:") or cb.startswith("yoink_a:") or cb.startswith("back_card:")
+
+    print("test_video_quality_keyboard passed!")
+
+
+def test_split_video_into_parts_small_file(tmp_path=None):
+    """Test that small files under 48MB are not split."""
+    import tempfile
+    tmp_fd, path = tempfile.mkstemp(suffix=".mp4")
+    os.write(tmp_fd, b"0" * 1024)
+    os.close(tmp_fd)
+
+    try:
+        parts = split_video_into_parts(path, max_part_size_mb=48)
+        assert parts == [path]
+    finally:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+    print("test_split_video_into_parts_small_file passed!")
+
+
+def test_resolve_cookiefile():
+    """Test cookiefile resolution from environment variable."""
+    from app.services.video_downloader import _resolve_cookiefile
+
+    os.environ["YOUTUBE_COOKIES"] = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t0\tTEST\t12345\n"
+    try:
+        resolved = _resolve_cookiefile()
+        assert resolved is not None
+        assert os.path.exists(resolved)
+        with open(resolved, "r", encoding="utf-8") as rf:
+            content = rf.read()
+        assert "TEST\t12345" in content
+    finally:
+        os.environ.pop("YOUTUBE_COOKIES", None)
+    print("test_resolve_cookiefile passed!")
+
+
+async def test_process_and_send_video_pipeline():
+    """Verify that process_and_send_video automatically downloads, tracks status, and sends video."""
+    import tempfile
+    from unittest.mock import AsyncMock, patch
+
+    mock_bot = AsyncMock()
+    mock_status_msg = AsyncMock()
+    status_edits = []
+
+    async def fake_edit_text(text, **kwargs):
+        status_edits.append(text)
+    mock_status_msg.edit_text.side_effect = fake_edit_text
+
+    # Create dummy video file
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(b"0" * 2048)
+        dummy_file = f.name
+
+    from app.bot.handlers.bookmarks import process_and_send_video
+
+    with patch("app.bot.handlers.bookmarks.download_video", new=AsyncMock(return_value=([dummy_file], {"title": "Test YouTube Video", "duration": 120, "width": 1280, "height": 720}, None))):
+        await process_and_send_video(
+            bot=mock_bot,
+            chat_id=12345,
+            user_id=12345,
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            status_msg=mock_status_msg,
+            quality="auto",
+        )
+
+    # Verify status transitions
+    assert any("[1/3] Скачивание видео" in s for s in status_edits), "Missing download state"
+    assert any("[2/3] Подготовка файла" in s for s in status_edits), "Missing preparation state"
+    assert any("[3/3] Отправка видео в Telegram" in s for s in status_edits), "Missing sending state"
+    assert any("Видео успешно отправлено" in s for s in status_edits), "Missing completed state"
+
+    # Verify video was sent to user chat
+    assert mock_bot.send_video.called, "bot.send_video was not called!"
+    call_kwargs = mock_bot.send_video.call_args.kwargs
+    assert call_kwargs["chat_id"] == 12345
+    assert "Test YouTube Video" in call_kwargs["caption"]
+    assert call_kwargs["supports_streaming"] is True
+
+    print("test_process_and_send_video_pipeline passed!")
+
+
 if __name__ == "__main__":
     test_is_video_url()
     test_format_duration()
     test_ffmpeg_found()
     test_bookmark_card_keyboard_yoinks_buttons()
+    test_video_quality_keyboard()
+    test_split_video_into_parts_small_file()
     asyncio.run(test_video_extractor())
+    test_resolve_cookiefile()
+    asyncio.run(test_process_and_send_video_pipeline())
+
     print("\nALL YOINKS DOWNLOADER TESTS PASSED!")

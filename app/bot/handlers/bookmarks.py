@@ -2,12 +2,13 @@ import asyncio
 import html
 import json
 import os
+import shutil
 import tempfile
 import uuid
 from typing import Optional
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Message
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.card_renderer import check_is_long_note, send_card_message, update_card_message
@@ -21,6 +22,7 @@ from app.extractors.url_utils import extract_urls, normalize_emoji_digits
 from app.extractors.youtube import YOUTUBE_REGEX
 from app.providers.registry import get_embedding_provider, get_vector_store
 from app.services.ingest import IngestTask, IngestionQueueService
+from app.services.video_downloader import is_video_url, download_video, download_audio
 
 router = Router()
 
@@ -80,8 +82,180 @@ def extract_forward_author(message: Message) -> Optional[str]:
     return None
 
 
+async def process_and_send_video(
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    url: str,
+    status_msg: Message,
+    quality: str = "auto",
+    session: Optional[AsyncSession] = None,
+    user_comment: Optional[str] = None,
+):
+    """
+    Automatic YouTube and video downloader & sender pipeline.
+    Progress states:
+      ⏬ [1/3] Скачивание видео...
+      📦 [2/3] Подготовка файла...
+      📤 [3/3] Отправка видео в Telegram...
+      ✅ Видео отправлено.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="yoinks_auto_")
+    try:
+        # State 1: Скачивание
+        try:
+            await status_msg.edit_text(
+                "⏬ <b>[1/3] Скачивание видео...</b>\n<i>Загружаю видеопоток...</i>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        file_paths, meta, err = await download_video(url, target_dir=tmp_dir, quality=quality)
+
+        if err or not file_paths:
+            err_lower = (err or "").lower()
+            is_bot_challenge = "bot" in err_lower or "sign in" in err_lower
+
+            web_dl_url = None
+            if "youtube.com" in url:
+                web_dl_url = url.replace("youtube.com", "ssyoutube.com")
+            elif "youtu.be/" in url:
+                web_dl_url = url.replace("youtu.be/", "ssyoutube.com/watch?v=")
+            else:
+                web_dl_url = "https://cobalt.tools"
+
+            buttons = []
+            if meta and meta.get("direct_url"):
+                buttons.append([InlineKeyboardButton(text="🌐 Скачать по прямой ссылке", url=meta["direct_url"])])
+            elif web_dl_url:
+                buttons.append([InlineKeyboardButton(text="🌐 Скачать видео через веб в 1 клик", url=web_dl_url)])
+
+            if is_bot_challenge:
+                buttons.append([InlineKeyboardButton(text="ℹ️ Как подключить cookies в боте", callback_data="yoink_cookie_help:0")])
+                msg_body = (
+                    "🛡 <b>YouTube ограничил автоматическую загрузку на сервере хостинга:</b>\n"
+                    "<i>(YouTube требует подтверждение от ботов для IP датацентра)</i>\n\n"
+                    "👉 <b>Вы можете скачать видео прямо сейчас в 1 клик через веб:</b>\n\n"
+                    "💡 <i>Чтобы бот сам скачивал любые ролики с YouTube прямо в этот чат, добавьте cookies (кнопка ниже).</i>"
+                )
+            else:
+                clean_err = html.escape((err or 'Неизвестная ошибка')[:200])
+                msg_body = f"⚠️ <b>Не удалось скачать видео:</b>\n{clean_err}"
+
+            reply_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            try:
+                await status_msg.edit_text(
+                    msg_body,
+                    reply_markup=reply_kb,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                pass
+            return
+
+        # State 2: Подготовка файла
+        try:
+            await status_msg.edit_text(
+                "📦 <b>[2/3] Подготовка файла...</b>\n<i>Проверяю формат и подготавливаю видео для Telegram...</i>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        valid_paths = [p for p in file_paths if os.path.exists(p) and os.path.getsize(p) > 1024]
+        if not valid_paths:
+            try:
+                await status_msg.edit_text("⚠️ <b>Файл видео не найден или повреждён после загрузки.</b>", parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        # State 3: Отправка видео в Telegram
+        total_parts = len(valid_paths)
+        part_info = f" ({total_parts} ч.)" if total_parts > 1 else ""
+        try:
+            await status_msg.edit_text(
+                f"📤 <b>[3/3] Отправка видео в Telegram{part_info}...</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        title = (meta.get("title") if meta else None) or "Видео"
+        uploader = (meta.get("uploader") if meta else None) or ""
+        duration = meta.get("duration") if meta else None
+        width = meta.get("width") if meta else None
+        height = meta.get("height") if meta else None
+
+        for idx, f_path in enumerate(valid_paths, start=1):
+            caption = f"🎬 <b>{html.escape(title[:200])}</b>"
+            if total_parts > 1:
+                caption += f"\n📁 <b>Часть {idx} из {total_parts}</b>"
+            if uploader:
+                caption += f"\n👤 {html.escape(uploader[:100])}"
+            if user_comment:
+                caption += f"\n💬 <i>{html.escape(user_comment[:200])}</i>"
+            caption += f"\n🔗 {url}"
+
+            video_file = FSInputFile(f_path)
+            await bot.send_video(
+                chat_id=chat_id,
+                video=video_file,
+                caption=caption[:1024],
+                parse_mode="HTML",
+                duration=int(duration) if duration and total_parts == 1 else None,
+                width=int(width) if width else None,
+                height=int(height) if height else None,
+                supports_streaming=True,
+            )
+
+        # State 4: Завершено
+        try:
+            await status_msg.edit_text("✅ <b>Видео успешно отправлено!</b>", parse_mode="HTML")
+            await asyncio.sleep(2)
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        # Save bookmark in DB so user has it in their bookmarks library
+        if session:
+            try:
+                from app.db.repositories import BookmarkRepository, TagRepository
+                bm_repo = BookmarkRepository(session)
+                tag_repo = TagRepository(session)
+                tag_name = "youtube" if ("youtu.be" in url or "youtube.com" in url) else "video"
+                tags = await tag_repo.get_or_create_tags(user_id, ["видео", tag_name])
+                await bm_repo.create(
+                    user_id=user_id,
+                    content_type=ContentType.YOUTUBE if "youtu" in url else ContentType.ARTICLE,
+                    url=url,
+                    title=f"🎬 {title[:200]}",
+                    author=uploader,
+                    domain="youtube.com" if "youtu" in url else "video",
+                    full_text=f"Видео: {title}\nАвтор: {uploader}\nСсылка: {url}",
+                    summary=f"🎬 Видео: {title}",
+                    reading_time_min=max(1, int((duration or 60) // 60)),
+                    user_comment=user_comment,
+                    tags=tags,
+                )
+                await session.commit()
+            except Exception as bm_err:
+                log.warning(f"Failed to auto-save video bookmark to DB: {bm_err}")
+
+    except Exception as e:
+        log.exception(f"Error in process_and_send_video for {url}: {e}")
+        try:
+            await status_msg.edit_text(f"⚠️ Ошибка при отправке видео: {html.escape(str(e)[:150])}")
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @router.message(F.text & ~F.text.startswith("/") & ~F.text.in_(MENU_BUTTON_TEXTS))
-async def handle_text_or_urls(message: Message):
+async def handle_text_or_urls(message: Message, session: AsyncSession):
     if not ingest_service:
         await message.answer("Сервис обработки временно недоступен.")
         return
@@ -95,6 +269,31 @@ async def handle_text_or_urls(message: Message):
         non_url_text = text
         for u in urls:
             non_url_text = non_url_text.replace(u, "").strip()
+
+        # Если сообщение содержит видео-ссылку (YouTube, TikTok, Shorts, Reels и т.д.)
+        # -> запускаем автоматическое скачивание и отправку видео прямо в чат!
+        video_urls = [u for u in urls if is_video_url(u)]
+        if video_urls:
+            url = video_urls[0]
+            try:
+                status_msg = await message.answer(
+                    "⏬ <b>[1/3] Скачивание видео...</b>\n<i>Загружаю видеопоток с наилучшим качеством...</i>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                status_msg = await message.answer("⏬ [1/3] Скачивание видео...")
+
+            await process_and_send_video(
+                bot=message.bot,
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                url=url,
+                status_msg=status_msg,
+                quality="auto",
+                session=session,
+                user_comment=non_url_text if non_url_text else None,
+            )
+            return
 
         # 1. Если сообщение содержит текст поста/заметки вместе со ссылкой (или пост переслан из канала/чата)
         # -> это ЗАМЕТКА пользователя/канала со ссылкой на источник! Сохраняем оригинальный текст 1:1 без парсинга статьи!
@@ -906,101 +1105,20 @@ async def cb_yoink_quality_download(callback: CallbackQuery, session: AsyncSessi
     label = quality_labels.get(quality, quality)
     await callback.answer(f"🎬 Скачиваю ({label})...")
     status_msg = await callback.message.answer(
-        f"⏳ <b>[Yoink] Скачиваю видео ({label})...</b>\n"
-        f"<i>Обработка любого размера и длины...</i>",
+        f"⏬ <b>[1/3] Скачивание видео ({label})...</b>\n"
+        f"<i>Загружаю видеопоток...</i>",
         parse_mode="HTML",
     )
 
-    import tempfile
-    import shutil
-    from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
-    from app.services.video_downloader import download_video
-
-    tmp_dir = tempfile.mkdtemp(prefix="yoinks_vq_")
-    try:
-        file_paths, meta, err = await download_video(bookmark.url, target_dir=tmp_dir, quality=quality)
-        if err or not file_paths:
-            err_lower = (err or "").lower()
-            is_bot_challenge = "bot" in err_lower or "sign in" in err_lower
-
-            # Direct web-downloader URL fallback
-            web_dl_url = None
-            if bookmark.url:
-                if "youtube.com" in bookmark.url:
-                    web_dl_url = bookmark.url.replace("youtube.com", "ssyoutube.com")
-                elif "youtu.be/" in bookmark.url:
-                    web_dl_url = bookmark.url.replace("youtu.be/", "ssyoutube.com/watch?v=")
-                else:
-                    web_dl_url = "https://cobalt.tools"
-
-            buttons = []
-            if meta and meta.get("direct_url"):
-                buttons.append([InlineKeyboardButton(text="🌐 Скачать по прямой ссылке", url=meta["direct_url"])])
-            elif web_dl_url:
-                buttons.append([InlineKeyboardButton(text="🌐 Скачать видео через веб в 1 клик", url=web_dl_url)])
-
-            buttons.append([InlineKeyboardButton(text="🎵 Попробовать скачать аудио", callback_data=f"yoink_a:{bookmark.id}")])
-
-            if is_bot_challenge:
-                buttons.append([InlineKeyboardButton(text="ℹ️ Как подключить cookies в боте", callback_data=f"yoink_cookie_help:{bookmark.id}")])
-                msg_body = (
-                    "🛡 <b>YouTube ограничил загрузку на сервере хостинга:</b>\n"
-                    "<i>(YouTube требует подтверждение от ботов для IP датацентра)</i>\n\n"
-                    "👉 <b>Вы можете скачать видео прямо сейчас в 1 клик:</b>"
-                )
-            else:
-                clean_err = html.escape((err or 'Неизвестная ошибка')[:200])
-                msg_body = f"⚠️ <b>Не удалось скачать видео:</b>\n{clean_err}\n\n💡 Попробуйте другое качество или аудио:"
-
-            reply_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-            await status_msg.edit_text(
-                msg_body,
-                reply_markup=reply_kb,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-            )
-            return
-
-        title = (meta.get("title") if meta else None) or bookmark.title or "Видео"
-        uploader = (meta.get("uploader") if meta else None) or bookmark.author or ""
-        total_parts = len(file_paths)
-
-        for idx, f_path in enumerate(file_paths, start=1):
-            if not os.path.exists(f_path):
-                continue
-            caption = f"🎬 <b>{html.escape(title[:200])}</b>"
-            if total_parts > 1:
-                caption += f"\n📁 <b>Часть {idx} из {total_parts}</b>"
-            if uploader:
-                caption += f"\n👤 {html.escape(uploader[:100])}"
-            if bookmark.url:
-                caption += f"\n🔗 {bookmark.url}"
-
-            video_file = FSInputFile(f_path)
-            duration = meta.get("duration") if meta else None
-            width = meta.get("width") if meta else None
-            height = meta.get("height") if meta else None
-
-            await callback.message.answer_video(
-                video=video_file,
-                caption=caption[:1024],
-                parse_mode="HTML",
-                duration=int(duration) if duration and total_parts == 1 else None,
-                width=int(width) if width else None,
-                height=int(height) if height else None,
-                supports_streaming=True,
-            )
-
-        try:
-            await status_msg.delete()
-        except Exception:
-            pass
-
-    except Exception as e:
-        log.exception(f"Ошибка при yoink видео ({quality}): {e}")
-        await status_msg.edit_text("⚠️ Ошибка при отправке видео в Telegram.")
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    await process_and_send_video(
+        bot=callback.bot,
+        chat_id=callback.message.chat.id,
+        user_id=callback.from_user.id,
+        url=bookmark.url,
+        status_msg=status_msg,
+        quality=quality,
+        session=session,
+    )
 
 
 @router.callback_query(F.data.startswith("back_card:"))
@@ -1151,7 +1269,7 @@ async def cmd_yoink(message: Message, session: AsyncSession):
 
     url = args[1].strip()
     message.text = url
-    await handle_text_or_urls(message)
+    await handle_text_or_urls(message, session)
 
 
 

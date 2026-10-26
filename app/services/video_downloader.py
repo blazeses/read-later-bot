@@ -69,7 +69,13 @@ def _resolve_cookiefile() -> Optional[str]:
     """Resolve cookie file path from settings, environment variables, or local project files."""
     try:
         # 1. Configured path in settings or env COOKIES_FILE
-        custom_path = getattr(settings, "COOKIES_FILE", None) or os.getenv("COOKIES_FILE")
+        custom_path = None
+        s_path = getattr(settings, "COOKIES_FILE", None)
+        if isinstance(s_path, str) and s_path.strip():
+            custom_path = s_path.strip()
+        elif os.getenv("COOKIES_FILE"):
+            custom_path = os.getenv("COOKIES_FILE").strip()
+
         if custom_path and os.path.exists(custom_path):
             return custom_path
 
@@ -80,11 +86,19 @@ def _resolve_cookiefile() -> Optional[str]:
                 return os.path.abspath(candidate)
 
         # 3. Environment variable YOUTUBE_COOKIES or COOKIES_CONTENT
-        env_cookies = getattr(settings, "YOUTUBE_COOKIES", None) or os.getenv("YOUTUBE_COOKIES") or os.getenv("COOKIES_CONTENT")
-        if env_cookies and len(env_cookies.strip()) > 20:
+        env_cookies = None
+        s_cookies = getattr(settings, "YOUTUBE_COOKIES", None)
+        if isinstance(s_cookies, str) and len(s_cookies.strip()) > 20:
+            env_cookies = s_cookies.strip()
+        else:
+            raw_env = os.getenv("YOUTUBE_COOKIES") or os.getenv("COOKIES_CONTENT")
+            if raw_env and len(raw_env.strip()) > 20:
+                env_cookies = raw_env.strip()
+
+        if env_cookies:
             tmp_cookie = os.path.join(tempfile.gettempdir(), "ytdlp_runtime_cookies.txt")
             with open(tmp_cookie, "w", encoding="utf-8") as f:
-                f.write(env_cookies.strip())
+                f.write(env_cookies)
             return tmp_cookie
     except Exception as e:
         log.warning(f"Error resolving cookiefile: {e}")
@@ -102,7 +116,15 @@ def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
         "socket_timeout": 30,
         "geo_bypass": True,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "remote_components": ["ejs:github"],
     }
+
+    # Detect JavaScript runtime (node or deno) to solve YouTube n-challenges
+    node_path = shutil.which("node") or shutil.which("nodejs")
+    if node_path:
+        opts["js_runtimes"] = {"node": {}}
+    elif shutil.which("deno"):
+        opts["js_runtimes"] = {"deno": {}}
 
     cookie_path = _resolve_cookiefile()
     if cookie_path:
@@ -270,7 +292,9 @@ def _download_video_sync(
     """
     Synchronous video download with requested quality (1080, 720, 480, 360, auto).
     If the video exceeds Telegram limit (50MB), it is automatically split into playable parts.
+    Includes automatic retry with fallback format on transient errors.
     """
+    import time
     yt_dlp = _ensure_ytdlp()
     if not yt_dlp:
         return None, None, "Библиотека yt-dlp не установлена."
@@ -290,75 +314,80 @@ def _download_video_sync(
         format_selector = "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
     elif quality == "360":
         format_selector = "bestvideo[height<=360]+bestaudio/best[height<=360]/best"
-    else:  # auto (prefer single file under 50MB)
+    else:  # auto (balanced: 720p or best under 50MB)
         format_selector = (
-            "best[filesize<49M][ext=mp4]/"
-            "bestvideo[filesize<38M]+bestaudio[filesize<10M]/"
-            "best[filesize<49M]/"
-            "best[height<=720][filesize<49M]/"
-            "best[height<=480]/"
-            "best"
+            "best[filesize<48M][ext=mp4]/"
+            "bestvideo[height<=720]+bestaudio/best[height<=720]/"
+            "bestvideo+bestaudio/best"
         )
 
-    opts = _get_ytdlp_opts({
-        "outtmpl": outtmpl,
-        "format": format_selector,
-        "merge_output_format": "mp4",
-    })
+    last_err = None
+    for attempt in range(2):
+        try:
+            cur_format = format_selector if attempt == 0 else "best/bestvideo+bestaudio"
+            opts = _get_ytdlp_opts({
+                "outtmpl": outtmpl,
+                "format": cur_format,
+                "merge_output_format": "mp4",
+            })
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if not info:
-                return None, None, "Не удалось получить данные о видео."
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if not info:
+                    continue
 
-            # Find downloaded file
-            target_file = None
-            if "requested_downloads" in info and info["requested_downloads"]:
-                target_file = info["requested_downloads"][0].get("filepath")
+                # Find downloaded file
+                target_file = None
+                if "requested_downloads" in info and info["requested_downloads"]:
+                    target_file = info["requested_downloads"][0].get("filepath")
 
-            if not target_file or not os.path.exists(target_file):
-                candidates = [
-                    os.path.join(target_dir, f)
-                    for f in os.listdir(target_dir)
-                    if not f.endswith(".part") and not f.endswith(".ytdl")
-                ]
-                if candidates:
-                    target_file = max(candidates, key=os.path.getmtime)
+                if not target_file or not os.path.exists(target_file):
+                    candidates = [
+                        os.path.join(target_dir, f)
+                        for f in os.listdir(target_dir)
+                        if not f.endswith(".part") and not f.endswith(".ytdl")
+                    ]
+                    if candidates:
+                        target_file = max(candidates, key=os.path.getmtime)
 
-            if not target_file or not os.path.exists(target_file):
-                return None, None, "Файл видео не найден после загрузки."
+                if not target_file or not os.path.exists(target_file):
+                    continue
 
-            size = os.path.getsize(target_file)
-            parts = [target_file]
+                size = os.path.getsize(target_file)
+                if size < 1000:
+                    continue
 
-            # If video is larger than 49MB (e.g. 1080p or long 1-2 hour video), split into parts for Telegram
-            if size > (49 * 1024 * 1024):
-                parts = split_video_into_parts(target_file, max_part_size_mb=48)
-                if not parts:
-                    parts = [target_file]
+                parts = [target_file]
+                # If video is larger than 49MB (e.g. 1080p or long 1-2 hour video), split into parts for Telegram
+                if size > (49 * 1024 * 1024):
+                    parts = split_video_into_parts(target_file, max_part_size_mb=48)
+                    if not parts:
+                        parts = [target_file]
 
-            direct_url = info.get("url")
-            if not direct_url and info.get("requested_downloads"):
-                direct_url = info["requested_downloads"][0].get("url")
+                direct_url = info.get("url")
+                if not direct_url and info.get("requested_downloads"):
+                    direct_url = info["requested_downloads"][0].get("url")
 
-            meta = {
-                "title": info.get("title") or "Видео",
-                "uploader": info.get("uploader") or info.get("channel") or info.get("creator"),
-                "duration": info.get("duration"),
-                "width": info.get("width"),
-                "height": info.get("height"),
-                "filesize": size,
-                "parts_count": len(parts),
-                "direct_url": direct_url,
-                "quality": quality,
-            }
-            return parts, meta, None
+                meta = {
+                    "title": info.get("title") or "Видео",
+                    "uploader": info.get("uploader") or info.get("channel") or info.get("creator"),
+                    "duration": info.get("duration"),
+                    "width": info.get("width"),
+                    "height": info.get("height"),
+                    "filesize": size,
+                    "parts_count": len(parts),
+                    "direct_url": direct_url,
+                    "quality": quality,
+                }
+                return parts, meta, None
 
-    except Exception as e:
-        err_msg = str(e)
-        log.exception(f"Ошибка загрузки видео {url}: {e}")
-        return None, None, f"Ошибка загрузки: {err_msg[:200]}"
+        except Exception as e:
+            last_err = str(e)
+            log.warning(f"Download attempt {attempt + 1} failed for {url}: {e}")
+            if attempt == 0:
+                time.sleep(1)
+
+    return None, None, f"Ошибка загрузки: {(last_err or 'Не удалось загрузить видео')[:250]}"
 
 
 async def download_video(
