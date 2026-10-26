@@ -6,6 +6,7 @@ import tempfile
 import uuid
 from typing import Optional
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
