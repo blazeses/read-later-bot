@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import dataclass
 import html
 import json
+import os
 from typing import Dict, Optional, Set, Tuple
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -329,6 +330,13 @@ class IngestionQueueService:
 
                 await send_card_message(self.bot, task.chat_id, bookmark, kb, showing_full_text=True)
                 self.failed_tasks.pop(task.status_message_id, None)
+
+                # Очистка локального временного файла на диске после успешного сохранения
+                if task.content_type == ContentType.DOCUMENT and task.source and os.path.exists(task.source):
+                    try:
+                        os.remove(task.source)
+                    except Exception as rm_e:
+                        log.warning(f"Could not remove temp document {task.source}: {rm_e}")
 
             except Exception as e:
                 # Обязательный rollback сессии asyncpg при любом сбое

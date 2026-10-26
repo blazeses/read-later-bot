@@ -549,10 +549,25 @@ async def cb_edit_tags(callback: CallbackQuery, state: FSMContext):
     await state.update_data(bookmark_id=bookmark_id_str)
     await state.set_state(TagEditState.waiting_for_tags)
 
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit_tags")]]
+    )
+
     await callback.message.answer(
-        "✏️ Отправьте новые теги через пробел или запятую (например: <code>python async архитектура</code>):\n<i>(или отправьте /cancel для отмены)</i>",
+        "✏️ Отправьте новые теги через пробел или запятую (например: <code>python async архитектура</code>):\n<i>(или нажмите «Отмена»)</i>",
+        reply_markup=cancel_kb,
         parse_mode="HTML",
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_edit_tags")
+async def cb_cancel_edit_tags(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.edit_text("❌ Редактирование тегов отменено.")
+    except Exception:
+        await callback.message.answer("❌ Редактирование тегов отменено.")
     await callback.answer()
 
 

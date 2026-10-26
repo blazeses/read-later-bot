@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     )
 
     # Telegram Bot
-    BOT_TOKEN: str = Field(..., description="Telegram Bot Token from @BotFather")
+    BOT_TOKEN: str = Field(default="", description="Telegram Bot Token from @BotFather")
     ADMIN_IDS: str = Field(default="", description="Comma-separated Telegram user IDs of admins")
     WHITELIST_IDS: str = Field(
         default="", 

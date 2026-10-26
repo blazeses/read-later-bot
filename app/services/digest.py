@@ -1,4 +1,5 @@
 import asyncio
+import html
 from datetime import datetime, timezone
 from aiogram import Bot
 from sqlalchemy import and_, select
@@ -80,12 +81,28 @@ class DigestScheduler:
                     ]
 
                     for idx, b in enumerate(bookmarks, start=1):
-                        tags_str = " ".join([f"#{t.name}" for t in b.tags]) if b.tags else ""
-                        link = f"<a href='{b.url}'>{b.title}</a>" if b.url else f"<b>{b.title}</b>"
+                        safe_title = html.escape(b.title or "Без названия")
+                        if b.url:
+                            safe_url = html.escape(b.url, quote=True)
+                            link = f"<a href='{safe_url}'>{safe_title}</a>"
+                        else:
+                            link = f"<b>{safe_title}</b>"
+
+                        tags_str = " ".join([f"#{html.escape(t.name)}" for t in b.tags]) if b.tags else ""
+                        time_part = f"~{b.reading_time_min} мин." if b.reading_time_min else "время не указано"
+                        meta_parts = [f"⏱ {time_part}"]
+                        if tags_str:
+                            meta_parts.append(tags_str)
+
+                        summary_part = ""
+                        if b.summary:
+                            clean_summary = html.escape(b.summary[:150])
+                            summary_part = f"   💡 {clean_summary}...\n"
+
                         message_lines.append(
                             f"{idx}. {link}\n"
-                            f"   ⏱ ~{b.reading_time_min} мин. | {tags_str}\n"
-                            f"   💡 {b.summary[:150]}...\n"
+                            f"   {' | '.join(meta_parts)}\n"
+                            + summary_part
                         )
 
                     message_lines.append("\n<i>Управлять дайджестом можно в настройках (/help).</i>")

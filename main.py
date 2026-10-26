@@ -65,6 +65,10 @@ async def init_databases():
 async def main():
     log.info("Starting Read Later Telegram Bot...")
 
+    if not settings.BOT_TOKEN:
+        log.critical("BOT_TOKEN is not configured! Please provide BOT_TOKEN in .env or environment variables.")
+        return
+
     # 1. Initialize DB and Vector Collections
     await init_databases()
 
@@ -78,8 +82,10 @@ async def main():
     # 3. Setup Middlewares
     dp.message.middleware(WhitelistMiddleware())
     dp.callback_query.middleware(WhitelistMiddleware())
+    dp.inline_query.middleware(WhitelistMiddleware())
     dp.message.middleware(DbSessionMiddleware())
     dp.callback_query.middleware(DbSessionMiddleware())
+    dp.inline_query.middleware(DbSessionMiddleware())
 
     # 4. Setup Services
     ingest_service = IngestionQueueService(bot=bot)
@@ -102,7 +108,9 @@ async def main():
         await bot.set_my_commands([
             BotCommand(command="menu", description="📱 Открыть главное меню"),
             BotCommand(command="bookmarks", description="📥 Мои закладки"),
+            BotCommand(command="favorites", description="⭐ Избранные закладки"),
             BotCommand(command="pinned", description="📌 Закреплённые заметки"),
+            BotCommand(command="yoink", description="🎬 Скачать видео / медиа"),
             BotCommand(command="search", description="🔍 Поиск по смыслу"),
             BotCommand(command="add", description="➕ Загрузить заметку"),
             BotCommand(command="random", description="🎲 Случайная статья"),

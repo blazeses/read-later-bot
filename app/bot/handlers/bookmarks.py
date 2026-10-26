@@ -182,6 +182,9 @@ async def handle_media_upload(message: Message):
                 _media_groups[mg_id].append(message)
                 return
 
+            if len(_media_groups) > 50:
+                _media_groups.pop(next(iter(_media_groups)), None)
+
             _media_groups[mg_id] = [message]
             await asyncio.sleep(0.8)
             messages = _media_groups.pop(mg_id, [message])

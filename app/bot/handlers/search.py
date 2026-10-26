@@ -263,6 +263,10 @@ async def cb_search_page(callback: CallbackQuery, session: AsyncSession):
     parts = callback.data.split(":", 2)
     page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
     raw_val = parts[2] if len(parts) > 2 else ""
+    if len(raw_val) == 8 and raw_val not in _search_tokens and all(c in "0123456789abcdefABCDEF" for c in raw_val):
+        await callback.answer("⚠️ Сессия поиска устарела после перезапуска бота. Введите поисковый запрос заново.", show_alert=True)
+        return
+
     query = _search_tokens.get(raw_val, raw_val)
 
     offset = page - 1

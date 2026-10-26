@@ -3,6 +3,7 @@ import re
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from app.core.config import settings
 from app.core.logger import log
 from sqlalchemy import (
     and_,
@@ -224,8 +225,11 @@ class BookmarkRepository:
 
         # Compute tsvector in Postgres if dialect supports it
         try:
-            text_for_search = f"{title or ''} {summary or ''} {(full_text or '')[:5000]}"
-            bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
+            dialect = getattr(getattr(self.session, "bind", None), "dialect", None)
+            dialect_name = dialect.name if dialect else ""
+            if dialect_name == "postgresql" or "postgresql" in settings.DATABASE_URL:
+                text_for_search = f"{title or ''} {summary or ''} {(full_text or '')[:5000]}"
+                bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
         except Exception:
             pass
 
@@ -260,8 +264,11 @@ class BookmarkRepository:
         if full_text is not None:
             bookmark.full_text = full_text
             try:
-                text_for_search = f"{bookmark.title or ''} {bookmark.summary or ''} {full_text[:5000]}"
-                bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
+                dialect = getattr(getattr(self.session, "bind", None), "dialect", None)
+                dialect_name = dialect.name if dialect else ""
+                if dialect_name == "postgresql" or "postgresql" in settings.DATABASE_URL:
+                    text_for_search = f"{bookmark.title or ''} {bookmark.summary or ''} {full_text[:5000]}"
+                    bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
             except Exception:
                 pass
         if reading_time_min is not None:
