@@ -115,7 +115,13 @@ async def process_and_send_video(
 
         if err or not file_paths:
             err_lower = (err or "").lower()
-            is_bot_challenge = "bot" in err_lower or "sign in" in err_lower
+            is_bot_challenge = (
+                "bot" in err_lower
+                or "sign in" in err_lower
+                or "requested format is not available" in err_lower
+                or "403: forbidden" in err_lower
+                or "no video formats" in err_lower
+            )
 
             web_dl_url = None
             if "youtube.com" in url:
@@ -1156,7 +1162,13 @@ async def cb_yoink_audio(callback: CallbackQuery, session: AsyncSession):
         file_path, meta, err = await download_audio(bookmark.url, target_dir=tmp_dir, max_mb=50)
         if err or not file_path or not os.path.exists(file_path):
             err_lower = (err or "").lower()
-            is_bot_challenge = "bot" in err_lower or "sign in" in err_lower
+            is_bot_challenge = (
+                "bot" in err_lower
+                or "sign in" in err_lower
+                or "requested format is not available" in err_lower
+                or "403: forbidden" in err_lower
+                or "no video formats" in err_lower
+            )
 
             web_dl_url = None
             if bookmark.url:

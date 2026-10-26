@@ -130,10 +130,12 @@ def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
     if cookie_path:
         opts["cookiefile"] = cookie_path
     else:
-        # Modern client fallbacks when cookies are not provided
+        # Modern client fallbacks when cookies are not provided.
+        # 'android' is critical: it provides format 18 (360p progressive mp4)
+        # which works for many bot-protected videos without JS runtime or cookies.
         opts["extractor_args"] = {
             "youtube": {
-                "player_client": ["tv_samsung", "visionos", "web", "mweb"],
+                "player_client": ["android", "tv_samsung", "visionos", "web", "mweb"],
             }
         }
 
@@ -321,14 +323,34 @@ def _download_video_sync(
             "bestvideo+bestaudio/best"
         )
 
+    # Retry strategies: attempt 0 = user-requested format, attempt 1 = any best,
+    # attempt 2 = android-only client with progressive format 18 (360p mp4, works
+    # for many bot-protected YouTube videos even without cookies or JS runtime).
     last_err = None
-    for attempt in range(2):
+    max_attempts = 3
+    for attempt in range(max_attempts):
         try:
-            cur_format = format_selector if attempt == 0 else "best/bestvideo+bestaudio"
+            if attempt == 0:
+                cur_format = format_selector
+                extra = {}
+            elif attempt == 1:
+                cur_format = "best/bestvideo+bestaudio"
+                extra = {}
+            else:
+                # Last-resort: android client produces format 18 (progressive 360p mp4)
+                # which does not require ffmpeg merge and bypasses some bot challenges.
+                cur_format = "18/best[ext=mp4]/best"
+                extra = {
+                    "extractor_args": {
+                        "youtube": {"player_client": ["android"]},
+                    },
+                }
+
             opts = _get_ytdlp_opts({
                 "outtmpl": outtmpl,
                 "format": cur_format,
                 "merge_output_format": "mp4",
+                **extra,
             })
 
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -383,8 +405,8 @@ def _download_video_sync(
 
         except Exception as e:
             last_err = str(e)
-            log.warning(f"Download attempt {attempt + 1} failed for {url}: {e}")
-            if attempt == 0:
+            log.warning(f"Download attempt {attempt + 1}/{max_attempts} failed for {url}: {e}")
+            if attempt < max_attempts - 1:
                 time.sleep(1)
 
     return None, None, f"Ошибка загрузки: {(last_err or 'Не удалось загрузить видео')[:250]}"
