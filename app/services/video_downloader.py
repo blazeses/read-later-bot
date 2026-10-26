@@ -71,10 +71,13 @@ def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
         "no_warnings": True,
         "no_color": True,
         "noplaylist": True,
-        "socket_timeout": 20,
+        "socket_timeout": 30,
+        "geo_bypass": True,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "mweb"],
+                "player_client": ["ios", "android", "tv", "web_creator", "mweb"],
+                "player_skip": ["webpage", "configs"],
             }
         },
     }
@@ -145,37 +148,127 @@ async def extract_video_metadata(url: str) -> Optional[Dict[str, Any]]:
     return await asyncio.to_thread(_extract_info_sync, url)
 
 
+def split_video_into_parts(
+    file_path: str,
+    max_part_size_mb: int = 48,
+) -> list[str]:
+    """
+    If file exceeds max_part_size_mb, split it into smaller playable mp4 parts using ffmpeg.
+    Returns list of file paths (either [file_path] if no split needed, or [part1, part2, ...]).
+    """
+    if not os.path.exists(file_path):
+        return []
+
+    size = os.path.getsize(file_path)
+    max_bytes = max_part_size_mb * 1024 * 1024
+    if size <= max_bytes:
+        return [file_path]
+
+    ffmpeg_bin = _find_ffmpeg() or shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        log.warning("ffmpeg не найден для нарезки видео, возвращается исходный файл")
+        return [file_path]
+
+    import subprocess
+    duration = None
+    try:
+        ffprobe_bin = os.path.join(os.path.dirname(ffmpeg_bin), "ffprobe.exe") if os.name == "nt" else "ffprobe"
+        if not os.path.exists(ffprobe_bin):
+            ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
+        cmd = [
+            ffprobe_bin,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path,
+        ]
+        out = subprocess.check_output(cmd, timeout=15).decode().strip()
+        duration = float(out)
+    except Exception as e:
+        log.warning(f"Не удалось определить длительность через ffprobe: {e}")
+
+    total_mb = size / (1024 * 1024)
+    if duration and duration > 10:
+        segment_seconds = max(30, int(duration * (max_part_size_mb / total_mb)))
+    else:
+        segment_seconds = 300
+
+    dirname = os.path.dirname(file_path)
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    out_pattern = os.path.join(dirname, f"{base_name}_part_%03d.mp4")
+
+    split_cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i", file_path,
+        "-c", "copy",
+        "-map", "0",
+        "-segment_time", str(segment_seconds),
+        "-f", "segment",
+        "-reset_timestamps", "1",
+        out_pattern,
+    ]
+
+    try:
+        subprocess.run(split_cmd, check=True, capture_output=True, timeout=180)
+        parts = sorted([
+            os.path.join(dirname, f)
+            for f in os.listdir(dirname)
+            if f.startswith(f"{base_name}_part_") and f.endswith(".mp4")
+        ])
+        if parts:
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+            return parts
+    except Exception as e:
+        log.exception(f"Ошибка при нарезке видео через ffmpeg: {e}")
+
+    return [file_path]
+
+
 def _download_video_sync(
     url: str,
     target_dir: str,
-    max_mb: int = 50,
-) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+    quality: str = "auto",
+) -> Tuple[Optional[list[str]], Optional[Dict[str, Any]], Optional[str]]:
     """
-    Synchronous video download with yt-dlp constrained to max_mb (default 50MB for Telegram).
+    Synchronous video download with requested quality (1080, 720, 480, 360, auto).
+    If the video exceeds Telegram limit (50MB), it is automatically split into playable parts.
     """
     yt_dlp = _ensure_ytdlp()
     if not yt_dlp:
         return None, None, "Библиотека yt-dlp не установлена."
 
-    max_bytes = max_mb * 1024 * 1024
     outtmpl = os.path.join(target_dir, "%(title).80s_%(id)s.%(ext)s")
 
-    # Format strategy:
-    # 1. Progressive mp4 under max_bytes or combined video+audio under max_bytes
-    # 2. Prefer 720p or 480p to fit under 50MB
-    format_selector = (
-        f"best[filesize<{max_bytes}][ext=mp4]/"
-        f"bestvideo[filesize<{int(max_bytes * 0.8)}]+bestaudio[filesize<{int(max_bytes * 0.2)}]/"
-        f"best[filesize<{max_bytes}]/"
-        f"best[height<=720][filesize<{max_bytes}]/"
-        f"best[height<=480]/"
-        f"best"
-    )
+    # Format strategy based on user requested quality:
+    if quality in ("2160", "4k"):
+        format_selector = "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"
+    elif quality in ("1440", "2k"):
+        format_selector = "bestvideo[height<=1440]+bestaudio/best[height<=1440]/best"
+    elif quality == "1080":
+        format_selector = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+    elif quality == "720":
+        format_selector = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+    elif quality == "480":
+        format_selector = "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+    elif quality == "360":
+        format_selector = "bestvideo[height<=360]+bestaudio/best[height<=360]/best"
+    else:  # auto (prefer single file under 50MB)
+        format_selector = (
+            "best[filesize<49M][ext=mp4]/"
+            "bestvideo[filesize<38M]+bestaudio[filesize<10M]/"
+            "best[filesize<49M]/"
+            "best[height<=720][filesize<49M]/"
+            "best[height<=480]/"
+            "best"
+        )
 
     opts = _get_ytdlp_opts({
         "outtmpl": outtmpl,
         "format": format_selector,
-        "max_filesize": max_bytes,
         "merge_output_format": "mp4",
     })
 
@@ -191,7 +284,6 @@ def _download_video_sync(
                 target_file = info["requested_downloads"][0].get("filepath")
 
             if not target_file or not os.path.exists(target_file):
-                # Search in target_dir for any video file
                 candidates = [
                     os.path.join(target_dir, f)
                     for f in os.listdir(target_dir)
@@ -204,13 +296,17 @@ def _download_video_sync(
                 return None, None, "Файл видео не найден после загрузки."
 
             size = os.path.getsize(target_file)
-            if size > max_bytes:
-                os.remove(target_file)
-                return (
-                    None,
-                    None,
-                    f"Размер видео ({size // (1024 * 1024)} МБ) превышает лимит Telegram Bot API (50 МБ).",
-                )
+            parts = [target_file]
+
+            # If video is larger than 49MB (e.g. 1080p or long 1-2 hour video), split into parts for Telegram
+            if size > (49 * 1024 * 1024):
+                parts = split_video_into_parts(target_file, max_part_size_mb=48)
+                if not parts:
+                    parts = [target_file]
+
+            direct_url = info.get("url")
+            if not direct_url and info.get("requested_downloads"):
+                direct_url = info["requested_downloads"][0].get("url")
 
             meta = {
                 "title": info.get("title") or "Видео",
@@ -219,13 +315,14 @@ def _download_video_sync(
                 "width": info.get("width"),
                 "height": info.get("height"),
                 "filesize": size,
+                "parts_count": len(parts),
+                "direct_url": direct_url,
+                "quality": quality,
             }
-            return target_file, meta, None
+            return parts, meta, None
 
     except Exception as e:
         err_msg = str(e)
-        if "File is larger than max-filesize" in err_msg or "max_filesize" in err_msg:
-            return None, None, "Размер видео превышает лимит Telegram (50 МБ)."
         log.exception(f"Ошибка загрузки видео {url}: {e}")
         return None, None, f"Ошибка загрузки: {err_msg[:200]}"
 
@@ -233,13 +330,12 @@ def _download_video_sync(
 async def download_video(
     url: str,
     target_dir: Optional[str] = None,
-    max_mb: int = 50,
-) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
-    """Asynchronously download video."""
-    cleanup_dir = False
+    quality: str = "auto",
+) -> Tuple[Optional[list[str]], Optional[Dict[str, Any]], Optional[str]]:
+    """Asynchronously download video with specified quality and automatic part-splitting for large videos."""
     if not target_dir:
         target_dir = tempfile.mkdtemp(prefix="yoinks_vid_")
-    return await asyncio.to_thread(_download_video_sync, url, target_dir, max_mb)
+    return await asyncio.to_thread(_download_video_sync, url, target_dir, quality)
 
 
 def _download_audio_sync(

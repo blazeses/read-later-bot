@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.card_renderer import check_is_long_note, send_card_message, update_card_message
-from app.bot.keyboards import get_bookmark_card_keyboard
+from app.bot.keyboards import get_bookmark_card_keyboard, get_video_quality_keyboard
 from app.core.config import settings
 from app.core.logger import log
 from app.db.models import ContentType
@@ -859,7 +859,7 @@ async def cb_toggle_pin(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data.startswith("yoink_v:"))
-async def cb_yoink_video(callback: CallbackQuery, session: AsyncSession):
+async def cb_yoink_video_picker(callback: CallbackQuery, session: AsyncSession):
     bm_id_str = callback.data.split(":")[1]
     bookmark_id = uuid.UUID(bm_id_str)
     repo = BookmarkRepository(session)
@@ -868,60 +868,114 @@ async def cb_yoink_video(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Ссылка на видео не найдена.", show_alert=True)
         return
 
-    await callback.answer("🎬 Yoink! Начинаю скачивание видео...")
+    kb = get_video_quality_keyboard(bookmark_id)
+    title = bookmark.title or "Видео"
+    await callback.message.answer(
+        f"🎬 <b>Выберите качество загрузки:</b>\n"
+        f"<i>«{html.escape(title[:100])}»</i>\n\n"
+        f"💡 <i>Поддерживаются ролики любого размера и длины (большие видео автоматически нарезаются на удобные части для Telegram).</i>",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("yq:"))
+async def cb_yoink_quality_download(callback: CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    quality = parts[1]
+    bm_id = uuid.UUID(parts[2])
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bm_id, callback.from_user.id)
+    if not bookmark or not bookmark.url:
+        await callback.answer("Ссылка на видео не найдена.", show_alert=True)
+        return
+
+    quality_labels = {
+        "2160": "💎 4K Ultra HD (2160p)",
+        "1440": "🎬 2K Quad HD (1440p)",
+        "1080": "1080p (Full HD)",
+        "720": "720p (HD)",
+        "480": "480p (SD)",
+        "360": "360p (Эконом)",
+        "auto": "Лучшее (до 50 МБ)",
+    }
+    label = quality_labels.get(quality, quality)
+    await callback.answer(f"🎬 Скачиваю ({label})...")
     status_msg = await callback.message.answer(
-        "⏳ <b>[Yoink] Скачиваю видео...</b>\n<i>Подбираю лучшее качество (до 50 МБ)</i>",
+        f"⏳ <b>[Yoink] Скачиваю видео ({label})...</b>\n"
+        f"<i>Обработка любого размера и длины...</i>",
         parse_mode="HTML",
     )
 
     import tempfile
     import shutil
-    from aiogram.types import FSInputFile
+    from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
     from app.services.video_downloader import download_video
 
-    tmp_dir = tempfile.mkdtemp(prefix="yoinks_v_")
+    tmp_dir = tempfile.mkdtemp(prefix="yoinks_vq_")
     try:
-        file_path, meta, err = await download_video(bookmark.url, target_dir=tmp_dir, max_mb=50)
-        if err or not file_path or not os.path.exists(file_path):
-            await status_msg.edit_text(
-                f"⚠️ <b>Не удалось скачать видео:</b>\n{html.escape(err or 'Неизвестная ошибка')}\n\n"
-                "💡 <i>Попробуйте скачать аудиодорожку кнопкой «🎵 Скачать аудио».</i>",
-                parse_mode="HTML",
-            )
+        file_paths, meta, err = await download_video(bookmark.url, target_dir=tmp_dir, quality=quality)
+        if err or not file_paths:
+            err_text = f"⚠️ <b>Не удалось скачать видео:</b>\n{html.escape(err or 'Неизвестная ошибка')}\n\n"
+            if meta and meta.get("direct_url"):
+                direct_kb = InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="🌐 Скачать по прямой ссылке", url=meta["direct_url"])]]
+                )
+                await status_msg.edit_text(err_text + "💡 Вы можете скачать видео по прямой ссылке:", reply_markup=direct_kb, parse_mode="HTML")
+            else:
+                await status_msg.edit_text(err_text + "💡 Попробуйте другое качество или аудиодорожку кнопкой «🎵 Скачать аудио».", parse_mode="HTML")
             return
 
         title = (meta.get("title") if meta else None) or bookmark.title or "Видео"
         uploader = (meta.get("uploader") if meta else None) or bookmark.author or ""
-        caption = f"🎬 <b>{html.escape(title[:200])}</b>"
-        if uploader:
-            caption += f"\n👤 {html.escape(uploader[:100])}"
-        if bookmark.url:
-            caption += f"\n🔗 {bookmark.url}"
+        total_parts = len(file_paths)
 
-        video_file = FSInputFile(file_path)
-        duration = meta.get("duration") if meta else None
-        width = meta.get("width") if meta else None
-        height = meta.get("height") if meta else None
+        for idx, f_path in enumerate(file_paths, start=1):
+            if not os.path.exists(f_path):
+                continue
+            caption = f"🎬 <b>{html.escape(title[:200])}</b>"
+            if total_parts > 1:
+                caption += f"\n📁 <b>Часть {idx} из {total_parts}</b>"
+            if uploader:
+                caption += f"\n👤 {html.escape(uploader[:100])}"
+            if bookmark.url:
+                caption += f"\n🔗 {bookmark.url}"
 
-        await callback.message.answer_video(
-            video=video_file,
-            caption=caption[:1024],
-            parse_mode="HTML",
-            duration=int(duration) if duration else None,
-            width=int(width) if width else None,
-            height=int(height) if height else None,
-            supports_streaming=True,
-        )
+            video_file = FSInputFile(f_path)
+            duration = meta.get("duration") if meta else None
+            width = meta.get("width") if meta else None
+            height = meta.get("height") if meta else None
+
+            await callback.message.answer_video(
+                video=video_file,
+                caption=caption[:1024],
+                parse_mode="HTML",
+                duration=int(duration) if duration and total_parts == 1 else None,
+                width=int(width) if width else None,
+                height=int(height) if height else None,
+                supports_streaming=True,
+            )
+
         try:
             await status_msg.delete()
         except Exception:
             pass
 
     except Exception as e:
-        log.exception(f"Ошибка при yoink видео: {e}")
+        log.exception(f"Ошибка при yoink видео ({quality}): {e}")
         await status_msg.edit_text("⚠️ Ошибка при отправке видео в Telegram.")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.callback_query(F.data.startswith("back_card:"))
+async def cb_back_card(callback: CallbackQuery):
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("yoink_a:"))

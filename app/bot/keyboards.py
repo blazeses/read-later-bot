@@ -199,6 +199,31 @@ def get_bookmark_card_keyboard(
     return builder.as_markup()
 
 
+def get_video_quality_keyboard(bookmark_id: uuid.UUID) -> InlineKeyboardMarkup:
+    """Inline keyboard for selecting video download quality (Yoinks)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="💎 4K (2160p)", callback_data=make_safe_callback("yq", "2160", bookmark_id)),
+        InlineKeyboardButton(text="🎬 2K (1440p)", callback_data=make_safe_callback("yq", "1440", bookmark_id)),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎬 1080p (Full HD)", callback_data=make_safe_callback("yq", "1080", bookmark_id)),
+        InlineKeyboardButton(text="🎬 720p (HD)", callback_data=make_safe_callback("yq", "720", bookmark_id)),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎬 480p (SD)", callback_data=make_safe_callback("yq", "480", bookmark_id)),
+        InlineKeyboardButton(text="🎬 360p (Эконом)", callback_data=make_safe_callback("yq", "360", bookmark_id)),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🚀 До 50 МБ (1 файл)", callback_data=make_safe_callback("yq", "auto", bookmark_id)),
+        InlineKeyboardButton(text="🎵 Аудио (MP3)", callback_data=make_safe_callback("yoink_a", bookmark_id)),
+    )
+    builder.row(
+        InlineKeyboardButton(text="« Назад к карточке", callback_data=make_safe_callback("back_card", bookmark_id)),
+    )
+    return builder.as_markup()
+
+
 def get_bookmarks_list_keyboard(
     bookmarks: list,
     current_page: int,
