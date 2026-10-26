@@ -64,7 +64,7 @@ def _find_ffmpeg() -> Optional[str]:
 
 
 def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
-    """Default secure and quiet options for yt-dlp."""
+    """Default secure and quiet options for yt-dlp with datacenter anti-bot bypass."""
     ffmpeg_path = _find_ffmpeg()
     opts = {
         "quiet": True,
@@ -72,6 +72,11 @@ def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
         "no_color": True,
         "noplaylist": True,
         "socket_timeout": 20,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "mweb"],
+            }
+        },
     }
     if ffmpeg_path:
         opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path)
@@ -80,11 +85,34 @@ def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
     return opts
 
 
-def _extract_info_sync(url: str) -> Optional[Dict[str, Any]]:
-    """Synchronous metadata extraction via yt-dlp."""
+def _ensure_ytdlp():
+    """Ensure yt-dlp is available, installing it on the fly if needed."""
     try:
         import yt_dlp
+        return yt_dlp
     except ImportError:
+        import subprocess
+        import sys
+        log.info("yt-dlp не найден в окружении. Запуск автоматической установки через pip...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "yt-dlp"],
+                check=True,
+                capture_output=True,
+                timeout=90,
+            )
+            import yt_dlp
+            log.info("yt-dlp успешно установлен автоматически!")
+            return yt_dlp
+        except Exception as e:
+            log.warning(f"Автоматическая установка yt-dlp не удалась: {e}")
+            return None
+
+
+def _extract_info_sync(url: str) -> Optional[Dict[str, Any]]:
+    """Synchronous metadata extraction via yt-dlp."""
+    yt_dlp = _ensure_ytdlp()
+    if not yt_dlp:
         log.warning("yt-dlp не установлен")
         return None
 
@@ -125,9 +153,8 @@ def _download_video_sync(
     """
     Synchronous video download with yt-dlp constrained to max_mb (default 50MB for Telegram).
     """
-    try:
-        import yt_dlp
-    except ImportError:
+    yt_dlp = _ensure_ytdlp()
+    if not yt_dlp:
         return None, None, "Библиотека yt-dlp не установлена."
 
     max_bytes = max_mb * 1024 * 1024
@@ -223,9 +250,8 @@ def _download_audio_sync(
     """
     Synchronous audio extraction with yt-dlp (MP3/M4A).
     """
-    try:
-        import yt_dlp
-    except ImportError:
+    yt_dlp = _ensure_ytdlp()
+    if not yt_dlp:
         return None, None, "Библиотека yt-dlp не установлена."
 
     max_bytes = max_mb * 1024 * 1024
