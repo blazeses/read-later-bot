@@ -857,3 +857,155 @@ async def cb_toggle_pin(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("📍 Откреплено от верха списка.")
 
 
+@router.callback_query(F.data.startswith("yoink_v:"))
+async def cb_yoink_video(callback: CallbackQuery, session: AsyncSession):
+    bm_id_str = callback.data.split(":")[1]
+    bookmark_id = uuid.UUID(bm_id_str)
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
+    if not bookmark or not bookmark.url:
+        await callback.answer("Ссылка на видео не найдена.", show_alert=True)
+        return
+
+    await callback.answer("🎬 Yoink! Начинаю скачивание видео...")
+    status_msg = await callback.message.answer(
+        "⏳ <b>[Yoink] Скачиваю видео...</b>\n<i>Подбираю лучшее качество (до 50 МБ)</i>",
+        parse_mode="HTML",
+    )
+
+    import tempfile
+    import shutil
+    from aiogram.types import FSInputFile
+    from app.services.video_downloader import download_video
+
+    tmp_dir = tempfile.mkdtemp(prefix="yoinks_v_")
+    try:
+        file_path, meta, err = await download_video(bookmark.url, target_dir=tmp_dir, max_mb=50)
+        if err or not file_path or not os.path.exists(file_path):
+            await status_msg.edit_text(
+                f"⚠️ <b>Не удалось скачать видео:</b>\n{html.escape(err or 'Неизвестная ошибка')}\n\n"
+                "💡 <i>Попробуйте скачать аудиодорожку кнопкой «🎵 Скачать аудио».</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        title = (meta.get("title") if meta else None) or bookmark.title or "Видео"
+        uploader = (meta.get("uploader") if meta else None) or bookmark.author or ""
+        caption = f"🎬 <b>{html.escape(title[:200])}</b>"
+        if uploader:
+            caption += f"\n👤 {html.escape(uploader[:100])}"
+        if bookmark.url:
+            caption += f"\n🔗 {bookmark.url}"
+
+        video_file = FSInputFile(file_path)
+        duration = meta.get("duration") if meta else None
+        width = meta.get("width") if meta else None
+        height = meta.get("height") if meta else None
+
+        await callback.message.answer_video(
+            video=video_file,
+            caption=caption[:1024],
+            parse_mode="HTML",
+            duration=int(duration) if duration else None,
+            width=int(width) if width else None,
+            height=int(height) if height else None,
+            supports_streaming=True,
+        )
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+    except Exception as e:
+        log.exception(f"Ошибка при yoink видео: {e}")
+        await status_msg.edit_text("⚠️ Ошибка при отправке видео в Telegram.")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.callback_query(F.data.startswith("yoink_a:"))
+async def cb_yoink_audio(callback: CallbackQuery, session: AsyncSession):
+    bm_id_str = callback.data.split(":")[1]
+    bookmark_id = uuid.UUID(bm_id_str)
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
+    if not bookmark or not bookmark.url:
+        await callback.answer("Ссылка на видео не найдена.", show_alert=True)
+        return
+
+    await callback.answer("🎵 Yoink! Извлекаю аудио...")
+    status_msg = await callback.message.answer(
+        "⏳ <b>[Yoink] Извлекаю аудиодорожку (MP3/M4A)...</b>",
+        parse_mode="HTML",
+    )
+
+    import tempfile
+    import shutil
+    from aiogram.types import FSInputFile
+    from app.services.video_downloader import download_audio
+
+    tmp_dir = tempfile.mkdtemp(prefix="yoinks_a_")
+    try:
+        file_path, meta, err = await download_audio(bookmark.url, target_dir=tmp_dir, max_mb=50)
+        if err or not file_path or not os.path.exists(file_path):
+            await status_msg.edit_text(
+                f"⚠️ <b>Не удалось извлечь аудио:</b>\n{html.escape(err or 'Неизвестная ошибка')}",
+                parse_mode="HTML",
+            )
+            return
+
+        title = (meta.get("title") if meta else None) or bookmark.title or "Аудиозапись"
+        uploader = (meta.get("uploader") if meta else None) or bookmark.author or ""
+        caption = f"🎵 <b>{html.escape(title[:200])}</b>"
+        if bookmark.url:
+            caption += f"\n🔗 {bookmark.url}"
+
+        audio_file = FSInputFile(file_path)
+        duration = meta.get("duration") if meta else None
+
+        await callback.message.answer_audio(
+            audio=audio_file,
+            title=title[:200],
+            performer=uploader[:100] if uploader else None,
+            caption=caption[:1024],
+            parse_mode="HTML",
+            duration=int(duration) if duration else None,
+        )
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+    except Exception as e:
+        log.exception(f"Ошибка при yoink аудио: {e}")
+        await status_msg.edit_text("⚠️ Ошибка при отправке аудио в Telegram.")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.message(Command("yoink", "yoinks", "video"))
+async def cmd_yoink(message: Message, session: AsyncSession):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        text = (
+            "🎬 <b>Yoinks — скачивание видео и аудио без рекламы</b>\n\n"
+            "Отправьте команду со ссылкой на видео:\n"
+            "<code>/yoink https://...</code>\n\n"
+            "<i>Или просто отправьте ссылку на видео сообщением в чат!</i>\n\n"
+            "<b>Поддерживается более 1800 сайтов:</b>\n"
+            "• YouTube / Shorts\n"
+            "• TikTok\n"
+            "• Instagram (Reels, посты)\n"
+            "• Twitter / X\n"
+            "• Reddit\n"
+            "• Threads, Vimeo, Twitch, VK, Rutube и другие."
+        )
+        await message.answer(text, parse_mode="HTML")
+        return
+
+    url = args[1].strip()
+    message.text = url
+    await handle_text_or_urls(message)
+
+
+

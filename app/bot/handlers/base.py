@@ -243,6 +243,7 @@ async def cmd_help(message: Message):
     text = (
         "📚 <b>Справка по командам:</b>\n\n"
         "📥 <code>/bookmarks</code> — открыть список сохраненных материалов\n"
+        "🎬 <code>/yoink &lt;ссылка&gt;</code> — скачать видео или аудио (YouTube, TikTok, Insta, X и др.)\n"
         "🔍 <code>/search &lt;запрос&gt;</code> — умный семантический поиск\n"
         "🎲 <code>/random</code> — случайный непрочитанный материал\n"
         "🏷 <code>/tags</code> — просмотр и фильтрация по тегам\n"

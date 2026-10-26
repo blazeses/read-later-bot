@@ -61,6 +61,7 @@ def get_bookmark_card_keyboard(
     has_file: bool = False,
     is_pinned: bool = False,
     is_long_note: bool = False,
+    is_video: bool = False,
 ) -> InlineKeyboardMarkup:
     """
     Inline keyboard for bookmark cards with action buttons:
@@ -164,7 +165,15 @@ def get_bookmark_card_keyboard(
     if ext_row:
         builder.row(*ext_row)
 
-    # 6. Back to list, tags, or Next Random button
+    # 6. Yoinks: Video & Audio download for supported media
+    from app.services.video_downloader import is_video_url
+    if is_video or is_video_url(url):
+        builder.row(
+            InlineKeyboardButton(text="🎬 Скачать видео", callback_data=make_safe_callback("yoink_v", bookmark_id)),
+            InlineKeyboardButton(text="🎵 Скачать аудио", callback_data=make_safe_callback("yoink_a", bookmark_id)),
+        )
+
+    # 7. Back to list, tags, or Next Random button
     if nav_prefix in ("rl", "recent_list", "ul", "unread_list", "pl", "pinned_list", "fl", "fav_list"):
         builder.row(
             InlineKeyboardButton(

@@ -15,6 +15,7 @@ lxml>=5.3.0
 pypdf>=5.0.1
 python-docx>=1.1.2
 youtube-transcript-api>=0.6.2
+yt-dlp>=2026.10.21
 loguru>=0.7.2
 fastembed>=0.3.6
 pytest>=8.3.3

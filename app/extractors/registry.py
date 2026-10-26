@@ -4,8 +4,10 @@ from app.db.models import ContentType
 from app.extractors.base import BaseExtractor, ExtractedContent
 from app.extractors.documents import DocumentExtractor
 from app.extractors.twitter import TWITTER_URL_REGEX, TwitterExtractor
+from app.extractors.video import VideoExtractor
 from app.extractors.web import WebPageExtractor
 from app.extractors.youtube import YOUTUBE_REGEX, YouTubeExtractor
+from app.services.video_downloader import is_video_url
 
 
 class ContentExtractorRegistry:
@@ -13,6 +15,7 @@ class ContentExtractorRegistry:
         self.web_extractor = WebPageExtractor()
         self.twitter_extractor = TwitterExtractor()
         self.youtube_extractor = YouTubeExtractor()
+        self.video_extractor = VideoExtractor()
         self.doc_extractor = DocumentExtractor()
 
     async def extract_url(self, url: str) -> ExtractedContent:
@@ -21,6 +24,8 @@ class ContentExtractorRegistry:
             return await self.twitter_extractor.extract(url)
         elif YOUTUBE_REGEX.search(url):
             return await self.youtube_extractor.extract(url)
+        elif is_video_url(url):
+            return await self.video_extractor.extract(url)
         else:
             return await self.web_extractor.extract(url)
 
