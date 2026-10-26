@@ -7,8 +7,10 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
+    from app.core.config import settings
     from app.core.logger import log
 except Exception:
+    settings = None
     import logging
     log = logging.getLogger("video_downloader")
 
@@ -63,8 +65,34 @@ def _find_ffmpeg() -> Optional[str]:
     return None
 
 
+def _resolve_cookiefile() -> Optional[str]:
+    """Resolve cookie file path from settings, environment variables, or local project files."""
+    try:
+        # 1. Configured path in settings or env COOKIES_FILE
+        custom_path = getattr(settings, "COOKIES_FILE", None) or os.getenv("COOKIES_FILE")
+        if custom_path and os.path.exists(custom_path):
+            return custom_path
+
+        # 2. Local files in project root or current working directory
+        cwd = os.getcwd()
+        for candidate in ("cookies.txt", "youtube_cookies.txt", "/etc/secrets/cookies.txt", os.path.join(cwd, "cookies.txt")):
+            if os.path.exists(candidate) and os.path.isfile(candidate) and os.path.getsize(candidate) > 10:
+                return os.path.abspath(candidate)
+
+        # 3. Environment variable YOUTUBE_COOKIES or COOKIES_CONTENT
+        env_cookies = getattr(settings, "YOUTUBE_COOKIES", None) or os.getenv("YOUTUBE_COOKIES") or os.getenv("COOKIES_CONTENT")
+        if env_cookies and len(env_cookies.strip()) > 20:
+            tmp_cookie = os.path.join(tempfile.gettempdir(), "ytdlp_runtime_cookies.txt")
+            with open(tmp_cookie, "w", encoding="utf-8") as f:
+                f.write(env_cookies.strip())
+            return tmp_cookie
+    except Exception as e:
+        log.warning(f"Error resolving cookiefile: {e}")
+    return None
+
+
 def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
-    """Default secure and quiet options for yt-dlp with datacenter anti-bot bypass."""
+    """Default secure and quiet options for yt-dlp with cookie support and anti-bot bypass."""
     ffmpeg_path = _find_ffmpeg()
     opts = {
         "quiet": True,
@@ -74,13 +102,19 @@ def _get_ytdlp_opts(extra_opts: Optional[dict] = None) -> dict:
         "socket_timeout": 30,
         "geo_bypass": True,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android", "tv", "web_creator", "mweb"],
-                "player_skip": ["webpage", "configs"],
-            }
-        },
     }
+
+    cookie_path = _resolve_cookiefile()
+    if cookie_path:
+        opts["cookiefile"] = cookie_path
+    else:
+        # Modern client fallbacks when cookies are not provided
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["tv_samsung", "visionos", "web", "mweb"],
+            }
+        }
+
     if ffmpeg_path:
         opts["ffmpeg_location"] = os.path.dirname(ffmpeg_path)
     if extra_opts:

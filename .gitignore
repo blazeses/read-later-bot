@@ -1,0 +1,27 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Environment variables & secrets
+.env
+*.local
+cookies.txt
+youtube_cookies.txt
+
+# Databases & local state
+*.db
+*.sqlite
+readlater.db
+
+# Temporary & runtime files
+tmp/
+temp/
+*.part
+*.ytdl

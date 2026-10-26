@@ -920,14 +920,45 @@ async def cb_yoink_quality_download(callback: CallbackQuery, session: AsyncSessi
     try:
         file_paths, meta, err = await download_video(bookmark.url, target_dir=tmp_dir, quality=quality)
         if err or not file_paths:
-            err_text = f"⚠️ <b>Не удалось скачать видео:</b>\n{html.escape(err or 'Неизвестная ошибка')}\n\n"
+            err_lower = (err or "").lower()
+            is_bot_challenge = "bot" in err_lower or "sign in" in err_lower
+
+            # Direct web-downloader URL fallback
+            web_dl_url = None
+            if bookmark.url:
+                if "youtube.com" in bookmark.url:
+                    web_dl_url = bookmark.url.replace("youtube.com", "ssyoutube.com")
+                elif "youtu.be/" in bookmark.url:
+                    web_dl_url = bookmark.url.replace("youtu.be/", "ssyoutube.com/watch?v=")
+                else:
+                    web_dl_url = "https://cobalt.tools"
+
+            buttons = []
             if meta and meta.get("direct_url"):
-                direct_kb = InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="🌐 Скачать по прямой ссылке", url=meta["direct_url"])]]
+                buttons.append([InlineKeyboardButton(text="🌐 Скачать по прямой ссылке", url=meta["direct_url"])])
+            elif web_dl_url:
+                buttons.append([InlineKeyboardButton(text="🌐 Скачать видео через веб в 1 клик", url=web_dl_url)])
+
+            buttons.append([InlineKeyboardButton(text="🎵 Попробовать скачать аудио", callback_data=f"yoink_a:{bookmark.id}")])
+
+            if is_bot_challenge:
+                buttons.append([InlineKeyboardButton(text="ℹ️ Как подключить cookies в боте", callback_data=f"yoink_cookie_help:{bookmark.id}")])
+                msg_body = (
+                    "🛡 <b>YouTube ограничил загрузку на сервере хостинга:</b>\n"
+                    "<i>(YouTube требует подтверждение от ботов для IP датацентра)</i>\n\n"
+                    "👉 <b>Вы можете скачать видео прямо сейчас в 1 клик:</b>"
                 )
-                await status_msg.edit_text(err_text + "💡 Вы можете скачать видео по прямой ссылке:", reply_markup=direct_kb, parse_mode="HTML")
             else:
-                await status_msg.edit_text(err_text + "💡 Попробуйте другое качество или аудиодорожку кнопкой «🎵 Скачать аудио».", parse_mode="HTML")
+                clean_err = html.escape((err or 'Неизвестная ошибка')[:200])
+                msg_body = f"⚠️ <b>Не удалось скачать видео:</b>\n{clean_err}\n\n💡 Попробуйте другое качество или аудио:"
+
+            reply_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await status_msg.edit_text(
+                msg_body,
+                reply_markup=reply_kb,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
             return
 
         title = (meta.get("title") if meta else None) or bookmark.title or "Видео"
@@ -1006,9 +1037,37 @@ async def cb_yoink_audio(callback: CallbackQuery, session: AsyncSession):
     try:
         file_path, meta, err = await download_audio(bookmark.url, target_dir=tmp_dir, max_mb=50)
         if err or not file_path or not os.path.exists(file_path):
+            err_lower = (err or "").lower()
+            is_bot_challenge = "bot" in err_lower or "sign in" in err_lower
+
+            web_dl_url = None
+            if bookmark.url:
+                if "youtube.com" in bookmark.url:
+                    web_dl_url = bookmark.url.replace("youtube.com", "ssyoutube.com")
+                elif "youtu.be/" in bookmark.url:
+                    web_dl_url = bookmark.url.replace("youtu.be/", "ssyoutube.com/watch?v=")
+                else:
+                    web_dl_url = "https://cobalt.tools"
+
+            buttons = []
+            if web_dl_url:
+                buttons.append([InlineKeyboardButton(text="🌐 Скачать через веб в 1 клик", url=web_dl_url)])
+            if is_bot_challenge:
+                buttons.append([InlineKeyboardButton(text="ℹ️ Как подключить cookies в боте", callback_data=f"yoink_cookie_help:{bookmark.id}")])
+                msg_body = (
+                    "🛡 <b>YouTube ограничил извлечение аудио на сервере:</b>\n"
+                    "<i>(YouTube требует подтверждение для IP датацентра)</i>\n\n"
+                    "👉 <b>Вы можете скачать аудио или видео в 1 клик через веб:</b>"
+                )
+            else:
+                msg_body = f"⚠️ <b>Не удалось извлечь аудио:</b>\n{html.escape((err or 'Неизвестная ошибка')[:200])}"
+
+            reply_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
             await status_msg.edit_text(
-                f"⚠️ <b>Не удалось извлечь аудио:</b>\n{html.escape(err or 'Неизвестная ошибка')}",
+                msg_body,
+                reply_markup=reply_kb,
                 parse_mode="HTML",
+                disable_web_page_preview=True,
             )
             return
 
@@ -1039,6 +1098,35 @@ async def cb_yoink_audio(callback: CallbackQuery, session: AsyncSession):
         await status_msg.edit_text("⚠️ Ошибка при отправке аудио в Telegram.")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.callback_query(F.data.startswith("yoink_cookie_help:"))
+async def cb_yoink_cookie_help(callback: CallbackQuery):
+    help_text = (
+        "🍪 <b>Как включить прямую загрузку с YouTube в боте:</b>\n\n"
+        "Облачные серверы (Render, Koyeb, VPS) находятся в датацентрах, и YouTube периодически запрашивает у них капчу или авторизацию.\n\n"
+        "<b>Чтобы бот всегда скачивал любые ролики с YouTube:</b>\n"
+        "1. Установите бесплатное расширение браузера: <b>Get cookies.txt LOCALLY</b> (для Chrome / Edge / Firefox).\n"
+        "2. Перейдите на <a href='https://youtube.com'>youtube.com</a> и нажмите на иконку расширения $\to$ <b>Export</b>.\n"
+        "3. В панели хостинга (например, <b>Render.com</b> $\to$ <i>Environment Variables</i>) добавьте переменную:\n"
+        "   <code>YOUTUBE_COOKIES</code> = <i>(вставьте всё содержимое скачанного файла)</i>\n"
+        "   <i>(или положите файл <code>cookies.txt</code> в корень проекта)</i>.\n\n"
+        "После этого бот сможет загружать абсолютно любые видео с YouTube вплоть до 4K прямо в Telegram!"
+    )
+    back_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть", callback_data="delete_status_msg")]]
+    )
+    await callback.message.edit_text(help_text, reply_markup=back_kb, parse_mode="HTML", disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "delete_status_msg")
+async def cb_delete_status_msg(callback: CallbackQuery):
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer()
 
 
 @router.message(Command("yoink", "yoinks", "video"))
