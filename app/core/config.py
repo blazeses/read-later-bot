@@ -77,9 +77,10 @@ class Settings(BaseSettings):
     DIGEST_DAY_OF_WEEK: int = Field(default=0, description="0=Monday, 6=Sunday")
     DIGEST_HOUR: int = Field(default=10, description="Hour of the day to send digest (0-23 UTC)")
 
-    # Media Downloader Cookies
+    # Media Downloader Cookies & Proxy
     COOKIES_FILE: Optional[str] = Field(default=None, description="Path to Netscape cookies.txt file for yt-dlp")
     YOUTUBE_COOKIES: Optional[str] = Field(default=None, description="Content of cookies.txt as env var for hosting")
+    YTDLP_PROXY: Optional[str] = Field(default=None, description="Optional HTTP/SOCKS5 proxy URL for yt-dlp (e.g. http://user:pass@ip:port or socks5://...)")
 
     @property
     def admin_id_list(self) -> List[int]:

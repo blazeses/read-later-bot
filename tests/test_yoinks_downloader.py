@@ -105,10 +105,8 @@ from app.services.video_downloader import (
 
 
 def test_is_video_url():
-    """Test URL detection for yoinks/yt-dlp supported video platforms."""
-    # Positive
-    assert is_video_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is True
-    assert is_video_url("https://youtu.be/dQw4w9WgXcQ") is True
+    """Test URL detection for yoinks/yt-dlp supported video platforms (YouTube downloading removed)."""
+    # Positive (TikTok, Reels, Twitter, VK, Rutube, Reddit)
     assert is_video_url("https://www.tiktok.com/@user/video/1234567890") is True
     assert is_video_url("https://vm.tiktok.com/ZM8example/") is True
     assert is_video_url("https://www.instagram.com/reel/C3abc123/") is True
@@ -121,7 +119,9 @@ def test_is_video_url():
     assert is_video_url("https://vk.com/video-12345_67890") is True
     assert is_video_url("https://rutube.ru/video/1234567890abcdef/") is True
 
-    # Negative
+    # Negative (YouTube is handled as summary/bookmark, not video download)
+    assert is_video_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is False
+    assert is_video_url("https://youtu.be/dQw4w9WgXcQ") is False
     assert is_video_url("https://habr.com/ru/articles/12345/") is False
     assert is_video_url("https://github.com/pablostanley/yoinks") is False
     assert is_video_url("https://en.wikipedia.org/wiki/Python") is False
@@ -151,17 +151,16 @@ def test_ffmpeg_found():
 
 
 def test_bookmark_card_keyboard_yoinks_buttons():
-    """Test that video bookmarks receive Yoinks 🎬 and 🎵 action buttons."""
+    """Test that video bookmarks receive Yoinks 🎬 and 🎵 action buttons, while YouTube does not."""
     bm_id = uuid.uuid4()
 
-    # 1. Video URL (YouTube)
+    # 1. Video URL (TikTok)
     kb = get_bookmark_card_keyboard(
         bookmark_id=bm_id,
-        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        url="https://www.tiktok.com/@user/video/1234567890",
     )
     all_buttons = [btn for row in kb.inline_keyboard for btn in row]
     btn_texts = [b.text for b in all_buttons]
-    btn_cbs = [b.callback_data for b in all_buttons if b.callback_data]
 
     assert "🎬 Скачать видео" in btn_texts
     assert "🎵 Скачать аудио" in btn_texts
@@ -174,6 +173,15 @@ def test_bookmark_card_keyboard_yoinks_buttons():
     assert audio_cb.startswith("yoink_a:")
     assert len(video_cb.encode("utf-8")) <= 64
     assert len(audio_cb.encode("utf-8")) <= 64
+
+    # 2. YouTube URL (Video download buttons must NOT appear)
+    kb_yt = get_bookmark_card_keyboard(
+        bookmark_id=bm_id,
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    )
+    yt_texts = [b.text for row in kb_yt.inline_keyboard for b in row]
+    assert "🎬 Скачать видео" not in yt_texts
+    assert "🎵 Скачать аудио" not in yt_texts
 
     # 2. Non-video URL (Article)
     kb_article = get_bookmark_card_keyboard(
@@ -268,10 +276,18 @@ def test_split_video_into_parts_small_file(tmp_path=None):
 
 
 def test_resolve_cookiefile():
-    """Test cookiefile resolution from environment variable."""
-    from app.services.video_downloader import _resolve_cookiefile
+    """Test cookiefile resolution from environment variable with auto-sanitization."""
+    from app.services.video_downloader import _resolve_cookiefile, _sanitize_netscape_cookies, _resolve_proxy
 
-    os.environ["YOUTUBE_COOKIES"] = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tFALSE\t0\tTEST\t12345\n"
+    # Test auto-sanitization of broken copy-pasted cookies
+    corrupted_sample = ".youtube.com TRUE / FALSE 1750000000 SID my_secret_cookie_val"
+    sanitized = _sanitize_netscape_cookies(corrupted_sample)
+    assert "# Netscape HTTP Cookie File" in sanitized
+    assert "\t" in sanitized
+    assert "my_secret_cookie_val" in sanitized
+
+    # Test resolution from env var with escaped newlines
+    os.environ["YOUTUBE_COOKIES"] = "\\n.youtube.com\\tTRUE\\t/\\tFALSE\\t0\\tTEST\\t12345\\n"
     try:
         resolved = _resolve_cookiefile()
         assert resolved is not None
@@ -281,6 +297,14 @@ def test_resolve_cookiefile():
         assert "TEST\t12345" in content
     finally:
         os.environ.pop("YOUTUBE_COOKIES", None)
+
+    # Test proxy resolution
+    os.environ["YTDLP_PROXY"] = "http://user:pass@1.2.3.4:8080"
+    try:
+        assert _resolve_proxy() == "http://user:pass@1.2.3.4:8080"
+    finally:
+        os.environ.pop("YTDLP_PROXY", None)
+
     print("test_resolve_cookiefile passed!")
 
 

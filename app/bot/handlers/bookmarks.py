@@ -1076,6 +1076,10 @@ async def cb_yoink_video_picker(callback: CallbackQuery, session: AsyncSession):
         await callback.answer("Ссылка на видео не найдена.", show_alert=True)
         return
 
+    if "youtube.com" in bookmark.url.lower() or "youtu.be" in bookmark.url.lower():
+        await callback.answer("Скачивание видео с YouTube отключено.", show_alert=True)
+        return
+
     kb = get_video_quality_keyboard(bookmark_id)
     title = bookmark.title or "Видео"
     await callback.message.answer(
@@ -1144,6 +1148,10 @@ async def cb_yoink_audio(callback: CallbackQuery, session: AsyncSession):
     bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
     if not bookmark or not bookmark.url:
         await callback.answer("Ссылка на видео не найдена.", show_alert=True)
+        return
+
+    if "youtube.com" in bookmark.url.lower() or "youtu.be" in bookmark.url.lower():
+        await callback.answer("Скачивание аудио с YouTube отключено.", show_alert=True)
         return
 
     await callback.answer("🎵 Yoink! Извлекаю аудио...")
@@ -1233,15 +1241,20 @@ async def cb_yoink_audio(callback: CallbackQuery, session: AsyncSession):
 @router.callback_query(F.data.startswith("yoink_cookie_help:"))
 async def cb_yoink_cookie_help(callback: CallbackQuery):
     help_text = (
-        "🍪 <b>Как включить прямую загрузку с YouTube в боте:</b>\n\n"
-        "Облачные серверы (Render, Koyeb, VPS) находятся в датацентрах, и YouTube периодически запрашивает у них капчу или авторизацию.\n\n"
-        "<b>Чтобы бот всегда скачивал любые ролики с YouTube:</b>\n"
-        "1. Установите бесплатное расширение браузера: <b>Get cookies.txt LOCALLY</b> (для Chrome / Edge / Firefox).\n"
-        "2. Перейдите на <a href='https://youtube.com'>youtube.com</a> и нажмите на иконку расширения $\to$ <b>Export</b>.\n"
-        "3. В панели хостинга (например, <b>Render.com</b> $\to$ <i>Environment Variables</i>) добавьте переменную:\n"
-        "   <code>YOUTUBE_COOKIES</code> = <i>(вставьте всё содержимое скачанного файла)</i>\n"
-        "   <i>(или положите файл <code>cookies.txt</code> в корень проекта)</i>.\n\n"
-        "После этого бот сможет загружать абсолютно любые видео с YouTube вплоть до 4K прямо в Telegram!"
+        "🛡 <b>Как включить загрузку YouTube на сервере хостинга:</b>\n\n"
+        "Дата-центры (Render, Koyeb, Hetzner, AWS) заблокированы YouTube на уровне IP.\n\n"
+        "<b>Два рабочих способа обойти блокировку:</b>\n\n"
+        "1️⃣ <b>Способ 1 — Прокси (самый надёжный, 100%):</b>\n"
+        "Добавьте в переменные хостинга:\n"
+        "<code>YTDLP_PROXY</code> = <code>http://user:pass@ip:port</code>\n"
+        "<i>(или socks5://...). Любой мобильный или резидентный прокси полностью снимает все баны YouTube.</i>\n\n"
+        "2️⃣ <b>Способ 2 — Cookies браузера:</b>\n"
+        "• Установите расширение <b>Get cookies.txt LOCALLY</b> (Chrome / Edge / Firefox).\n"
+        "• Откройте <a href='https://youtube.com'>youtube.com</a> $\to$ Export.\n"
+        "• Добавьте в переменные хостинга:\n"
+        "<code>YOUTUBE_COOKIES</code> = <i>(вставьте всё содержимое файла)</i>\n"
+        "<i>(бот теперь автоматически чистит форматирование и табуляции)</i>.\n\n"
+        "👉 <i>Также прямо сейчас вы можете скачать ролик в 1 клик по кнопке «Скачать видео через веб».</i>"
     )
     back_kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть", callback_data="delete_status_msg")]]
@@ -1268,18 +1281,27 @@ async def cmd_yoink(message: Message, session: AsyncSession):
             "Отправьте команду со ссылкой на видео:\n"
             "<code>/yoink https://...</code>\n\n"
             "<i>Или просто отправьте ссылку на видео сообщением в чат!</i>\n\n"
-            "<b>Поддерживается более 1800 сайтов:</b>\n"
-            "• YouTube / Shorts\n"
+            "<b>Поддерживаются платформы:</b>\n"
             "• TikTok\n"
             "• Instagram (Reels, посты)\n"
             "• Twitter / X\n"
             "• Reddit\n"
-            "• Threads, Vimeo, Twitch, VK, Rutube и другие."
+            "• VK / VK Видео\n"
+            "• Rutube\n"
+            "• Threads, Vimeo, Twitch и др."
         )
         await message.answer(text, parse_mode="HTML")
         return
 
     url = args[1].strip()
+    if "youtube.com" in url.lower() or "youtu.be" in url.lower():
+        await message.answer(
+            "ℹ️ <b>Скачивание видеофайлов с YouTube отключено.</b>\n\n"
+            "Для YouTube бот создаёт <b>умные текстовые конспекты и субтитры</b>. "
+            "Чтобы сохранить саммари ролика в закладки, просто отправьте ссылку в чат без команды /yoink.",
+            parse_mode="HTML",
+        )
+        return
     message.text = url
     await handle_text_or_urls(message, session)
 
