@@ -84,10 +84,15 @@ def build_card_text(
     if getattr(bookmark, "telegram_document_id", None):
         type_badge = "📦 Архив"
     tags_str = " ".join([f"#{html.escape(t.name)}" for t in bookmark.tags]) if bookmark.tags else ""
-    tags_part = f" | {tags_str}" if tags_str else ""
-    status_icon = "✅ Прочитано" if bookmark.is_read else "📖 Не прочитано"
-    pin_badge = "📌 Закреплено | " if getattr(bookmark, "is_pinned", False) else ""
-    status_line = f"Статус: {pin_badge}{status_icon}{tags_part}"
+    pin_badge = "📌 Закреплено" if getattr(bookmark, "is_pinned", False) else ""
+    if pin_badge and tags_str:
+        status_line = f"Статус: {pin_badge} | {tags_str}"
+    elif pin_badge:
+        status_line = f"Статус: {pin_badge}"
+    elif tags_str:
+        status_line = f"Теги: {tags_str}"
+    else:
+        status_line = ""
 
     author_clean = html.escape(bookmark.author.strip()) if bookmark.author else ""
     author_str = f" | 👤 {author_clean}" if author_clean else ""

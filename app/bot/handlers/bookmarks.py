@@ -5,9 +5,12 @@ import os
 import shutil
 import tempfile
 import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,15 +19,20 @@ from app.bot.keyboards import get_bookmark_card_keyboard, get_video_quality_keyb
 from app.core.config import settings
 from app.core.logger import log
 from app.db.models import ContentType
-from app.db.repositories import BookmarkRepository, TagRepository, UserRepository
+from app.db.repositories import BookmarkRepository, ReminderRepository, TagRepository, UserRepository
 from app.extractors.twitter import TWITTER_URL_REGEX
 from app.extractors.url_utils import extract_urls, normalize_emoji_digits
 from app.extractors.youtube import YOUTUBE_REGEX
 from app.providers.registry import get_embedding_provider, get_vector_store
+from app.services.date_parser import MSK_TZ, parse_user_reminder_time
 from app.services.ingest import IngestTask, IngestionQueueService
 from app.services.video_downloader import is_video_url, download_video, download_audio
 
 router = Router()
+
+
+class ReminderState(StatesGroup):
+    waiting_for_custom_time = State()
 
 # Global reference to ingestion service (injected in main)
 ingest_service: IngestionQueueService | None = None
@@ -728,36 +736,253 @@ async def cb_toggle_favorite(callback: CallbackQuery, session: AsyncSession):
     await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
 
 
+MSK_TZ = timezone(timedelta(hours=3))
+
+
 @router.callback_query(F.data.startswith("remind_menu:"))
-async def cb_remind_menu(callback: CallbackQuery):
+async def cb_remind_menu(callback: CallbackQuery, session: AsyncSession):
     bm_id_str = callback.data.split(":")[1]
+    bookmark_id = uuid.UUID(bm_id_str)
+    
+    repo = ReminderRepository(session)
+    active_rem = await repo.get_active_for_bookmark(callback.from_user.id, bookmark_id)
+
+    status_prefix = ""
+    cancel_btn = []
+    if active_rem:
+        local_remind_time = active_rem.remind_at.astimezone(MSK_TZ).strftime("%d.%m в %H:%M")
+        status_prefix = f"⏰ <i>Сейчас установлено: {local_remind_time} (МСК)</i>\n\n"
+        cancel_btn = [[InlineKeyboardButton(text="❌ Отменить напоминание", callback_data=f"set_remind:{bm_id_str}:cancel")]]
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🌅 Завтра утром (09:00)", callback_data=f"set_remind:{bm_id_str}:tomorrow")],
-            [InlineKeyboardButton(text="🏖 В субботу (11:00)", callback_data=f"set_remind:{bm_id_str}:weekend")],
-            [InlineKeyboardButton(text="📅 Через 3 дня", callback_data=f"set_remind:{bm_id_str}:3days")],
+            [
+                InlineKeyboardButton(text="⏱ 15 мин (минимум)", callback_data=f"set_remind:{bm_id_str}:15m"),
+                InlineKeyboardButton(text="⏱ 30 мин", callback_data=f"set_remind:{bm_id_str}:30m"),
+            ],
+            [
+                InlineKeyboardButton(text="⏱ Через 1 час", callback_data=f"set_remind:{bm_id_str}:1h"),
+                InlineKeyboardButton(text="⏱ Через 3 часа", callback_data=f"set_remind:{bm_id_str}:3h"),
+            ],
+            [
+                InlineKeyboardButton(text="🌅 Завтра утром (09:00)", callback_data=f"set_remind:{bm_id_str}:tomorrow"),
+                InlineKeyboardButton(text="🌆 Вечером (19:00)", callback_data=f"set_remind:{bm_id_str}:evening"),
+            ],
+            [
+                InlineKeyboardButton(text="🏖 В субботу (11:00)", callback_data=f"set_remind:{bm_id_str}:weekend"),
+                InlineKeyboardButton(text="📅 Через 3 дня", callback_data=f"set_remind:{bm_id_str}:3days"),
+            ],
+            [
+                InlineKeyboardButton(text="✍️ Задать своё время...", callback_data=f"set_remind:{bm_id_str}:custom"),
+            ],
+            *cancel_btn,
             [InlineKeyboardButton(text="« Отмена", callback_data="close_remind_menu")],
         ]
     )
-    await callback.message.answer("⏰ <b>Когда напомнить прочитать эту статью?</b>", reply_markup=kb, parse_mode="HTML")
+    await callback.message.answer(
+        f"⏰ <b>Когда напомнить про этот материал?</b>\n\n{status_prefix}Выберите вариант или укажите своё время (от 15 мин):",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("set_remind:"))
-async def cb_set_remind(callback: CallbackQuery):
+async def cb_set_remind(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     parts = callback.data.split(":")
+    bookmark_id = uuid.UUID(parts[1])
     period = parts[2]
-    labels = {
-        "tomorrow": "завтра в 09:00",
-        "weekend": "в субботу в 11:00",
-        "3days": "через 3 дня",
-    }
-    label = labels.get(period, "в выбранное время")
+
+    if period == "custom":
+        await state.update_data(bookmark_id=str(bookmark_id))
+        await state.set_state(ReminderState.waiting_for_custom_time)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+        cancel_kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_custom_remind")]]
+        )
+        await callback.message.answer(
+            "⏰ <b>Укажите своё время для напоминания:</b>\n\n"
+            "Напишите сообщением в чат, когда вам напомнить:\n"
+            "• <b>Через интервал:</b> <code>15 минут</code>, <code>45 мин</code>, <code>2 часа</code>\n"
+            "• <b>Точное время сегодня/завтра:</b> <code>20:30</code>, <code>завтра 14:00</code>\n"
+            "• <b>Дата и время:</b> <code>05.11 16:30</code>, <code>в пятницу в 12:00</code>\n\n"
+            "<i>⚠️ Минимальный интервал — не менее 15 минут от текущего момента.</i>",
+            reply_markup=cancel_kb,
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    repo = ReminderRepository(session)
+    now_utc = datetime.now(timezone.utc)
+    now_local = datetime.now(MSK_TZ)
+
+    if period == "cancel":
+        await repo.delete_for_bookmark(callback.from_user.id, bookmark_id)
+        await session.commit()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.answer("❌ Напоминание отменено.", show_alert=True)
+        return
+
+    if period == "15m":
+        target_utc = now_utc + timedelta(minutes=15)
+        label = "через 15 минут"
+    elif period == "30m":
+        target_utc = now_utc + timedelta(minutes=30)
+        label = "через 30 минут"
+    elif period == "1h":
+        target_utc = now_utc + timedelta(hours=1)
+        label = "через 1 час"
+    elif period == "3h":
+        target_utc = now_utc + timedelta(hours=3)
+        label = "через 3 часа"
+    elif period == "tomorrow":
+        target_local = (now_local + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+        target_utc = target_local.astimezone(timezone.utc)
+        label = f"завтра ({target_local.strftime('%d.%m')}) в 09:00"
+    elif period == "evening":
+        if now_local.hour < 19:
+            target_local = now_local.replace(hour=19, minute=0, second=0, microsecond=0)
+            label = "сегодня в 19:00"
+        else:
+            target_local = (now_local + timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+            label = f"завтра ({target_local.strftime('%d.%m')}) в 19:00"
+        target_utc = target_local.astimezone(timezone.utc)
+    elif period == "weekend":
+        days_ahead = (5 - now_local.weekday()) % 7
+        if days_ahead == 0 and now_local.hour >= 11:
+            days_ahead = 7
+        target_local = (now_local + timedelta(days=days_ahead)).replace(hour=11, minute=0, second=0, microsecond=0)
+        target_utc = target_local.astimezone(timezone.utc)
+        label = f"в субботу ({target_local.strftime('%d.%m')}) в 11:00"
+    elif period == "3days":
+        target_local = (now_local + timedelta(days=3)).replace(hour=10, minute=0, second=0, microsecond=0)
+        target_utc = target_local.astimezone(timezone.utc)
+        label = f"через 3 дня ({target_local.strftime('%d.%m')} в 10:00)"
+    else:
+        target_utc = now_utc + timedelta(hours=2)
+        label = "через 2 часа"
+
+    await repo.create_or_update(callback.from_user.id, bookmark_id, target_utc)
+    await session.commit()
+
     try:
         await callback.message.delete()
     except Exception:
         pass
     await callback.answer(f"⏰ Напоминание установлено на {label}!", show_alert=True)
+
+
+@router.callback_query(F.data == "cancel_custom_remind")
+async def cb_cancel_custom_remind(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer("Установка напоминания отменена.")
+
+
+@router.message(ReminderState.waiting_for_custom_time)
+async def process_custom_reminder_time(message: Message, state: FSMContext, session: AsyncSession):
+    if not message.text:
+        await message.answer("Пожалуйста, отправьте текстовое сообщение со временем (например: <code>через 30 минут</code> или <code>завтра в 14:00</code>).", parse_mode="HTML")
+        return
+
+    data = await state.get_data()
+    bookmark_id_str = data.get("bookmark_id")
+    if not bookmark_id_str:
+        await state.clear()
+        await message.answer("Сессия установки напоминания устарела. Откройте карточку материала снова.")
+        return
+
+    bookmark_id = uuid.UUID(bookmark_id_str)
+    target_utc, err_msg = parse_user_reminder_time(message.text)
+    if err_msg or not target_utc:
+        await message.answer(f"⚠️ {err_msg or 'Не удалось распознать время.'}\n\nПопробуйте ещё раз или нажмите «Отмена»:", parse_mode="HTML")
+        return
+
+    await state.clear()
+    repo = ReminderRepository(session)
+    await repo.create_or_update(message.from_user.id, bookmark_id, target_utc)
+    await session.commit()
+
+    local_dt = target_utc.astimezone(MSK_TZ).strftime("%d.%m.%Y в %H:%M")
+    await message.answer(
+        f"✅ <b>Напоминание успешно установлено!</b>\n\n⏰ Бот пришлёт этот материал: <b>{local_dt}</b> (МСК).",
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("snooze:"))
+async def cb_snooze(callback: CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    bookmark_id = uuid.UUID(parts[1])
+    mode = parts[2]
+
+    repo = ReminderRepository(session)
+    now_utc = datetime.now(timezone.utc)
+    now_local = datetime.now(MSK_TZ)
+
+    if mode == "1h":
+        target_utc = now_utc + timedelta(hours=1)
+        label = "1 час"
+    elif mode == "tomorrow":
+        target_local = (now_local + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+        target_utc = target_local.astimezone(timezone.utc)
+        label = f"завтра в 09:00 ({target_local.strftime('%d.%m')})"
+    else:
+        target_utc = now_utc + timedelta(hours=3)
+        label = "3 часа"
+
+    await repo.create_or_update(callback.from_user.id, bookmark_id, target_utc)
+    await session.commit()
+
+    await callback.answer(f"⏰ Напоминание отложено на {label}!", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("open_bm:"))
+async def cb_open_bm(callback: CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    bookmark_id = uuid.UUID(parts[1])
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
+    if not bookmark:
+        await callback.answer("Закладка не найдена или была удалена.", show_alert=True)
+        return
+
+    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
+    if bookmark.photos_json:
+        try:
+            p_list = json.loads(bookmark.photos_json)
+            if isinstance(p_list, list):
+                photo_count = len(p_list)
+        except Exception:
+            pass
+
+    has_file = bool(getattr(bookmark, "telegram_document_id", None))
+    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+    kb = get_bookmark_card_keyboard(
+        bookmark.id,
+        url=bookmark.url,
+        is_read=False,
+        showing_full_text=True,
+        photo_count=photo_count,
+        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
+        is_fav=is_fav,
+        has_file=has_file,
+        is_pinned=getattr(bookmark, "is_pinned", False),
+        is_long_note=check_is_long_note(bookmark),
+    )
+    await send_card_message(callback.message, callback.message.chat.id, bookmark, kb, showing_full_text=True)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "close_remind_menu")
@@ -851,57 +1076,8 @@ async def cb_show_album(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data.startswith("toggle_read:"))
-async def cb_toggle_read(callback: CallbackQuery, session: AsyncSession):
-    parts = callback.data.split(":")
-    bookmark_id = uuid.UUID(parts[1])
-    nav_prefix = parts[2] if len(parts) > 2 and parts[2] != "_" else None
-    current_page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
-    total_pages = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 1
-    extra_data = parts[5] if len(parts) > 5 and parts[5] != "_" else ""
-
-    repo = BookmarkRepository(session)
-    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
-    if not bookmark:
-        await callback.answer("Закладка не найдена.", show_alert=True)
-        return
-
-    new_status = not bookmark.is_read
-    await repo.mark_as_read(bookmark_id, callback.from_user.id, is_read=new_status)
-    await session.commit()
-    bookmark.is_read = new_status
-
-    photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
-    if bookmark.photos_json:
-        try:
-            p_list = json.loads(bookmark.photos_json)
-            if isinstance(p_list, list):
-                photo_count = len(p_list)
-        except Exception:
-            pass
-
-    has_file = bool(getattr(bookmark, "telegram_document_id", None))
-    is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
-    kb = get_bookmark_card_keyboard(
-        bookmark.id,
-        url=bookmark.url,
-        is_read=new_status,
-        showing_full_text=True,
-        nav_prefix=nav_prefix,
-        current_page=current_page,
-        total_pages=total_pages,
-        extra_data=extra_data,
-        photo_count=photo_count,
-        is_note=(bookmark.content_type == ContentType.NOTE or bool(bookmark.user_comment and bookmark.user_comment.strip())),
-        is_fav=is_fav,
-        has_file=has_file,
-        is_pinned=getattr(bookmark, "is_pinned", False),
-        is_long_note=check_is_long_note(bookmark),
-    )
-    page_info = (current_page, total_pages) if total_pages > 1 else None
-    await update_card_message(callback, bookmark, kb, showing_full_text=True, page_info=page_info)
-
-    status_text = "прочитано ✅" if new_status else "не прочитано 📖"
-    await callback.answer(f"Отмечено как {status_text}")
+async def cb_toggle_read(callback: CallbackQuery):
+    await callback.answer("Функция «прочитано/не прочитано» отключена.")
 
 
 @router.callback_query(F.data.startswith("toggle_view:"))

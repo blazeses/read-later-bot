@@ -87,8 +87,8 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
         if not results:
             kb_empty = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="🕒 Показать 5 недавних", callback_data="rl:1")],
-                    [InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1")],
+                    [InlineKeyboardButton(text="🕒 Показать недавние", callback_data="rl:1")],
+                    [InlineKeyboardButton(text="⭐ Избранное", callback_data="fl:1")],
                     [InlineKeyboardButton(text="🏷 Популярные теги", callback_data="open_tags_menu")],
                 ]
             )
@@ -141,7 +141,7 @@ async def execute_search(message: Message, query: str, session: AsyncSession):
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="🕒 Показать недавние", callback_data="rl:1")],
-                        [InlineKeyboardButton(text="📖 Непрочитанные", callback_data="ul:1")],
+                        [InlineKeyboardButton(text="⭐ Избранное", callback_data="fl:1")],
                     ]
                 ),
                 parse_mode="HTML",

@@ -53,6 +53,7 @@ except ImportError:
     sys.modules["aiogram.fsm"] = MagicMock()
     sys.modules["aiogram.fsm.context"] = MagicMock()
     sys.modules["aiogram.fsm.state"] = MagicMock()
+if "sqlalchemy" not in sys.modules:
     sys.modules["sqlalchemy"] = MagicMock()
     sys.modules["sqlalchemy.ext"] = MagicMock()
     sys.modules["sqlalchemy.ext.asyncio"] = MagicMock()

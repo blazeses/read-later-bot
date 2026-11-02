@@ -124,6 +124,25 @@ class Bookmark(Base):
     tags: Mapped[List["Tag"]] = relationship(
         "Tag", secondary=bookmark_tags, back_populates="bookmarks", lazy="selectin"
     )
+    reminders: Mapped[List["Reminder"]] = relationship(
+        "Reminder", back_populates="bookmark", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id", ondelete="CASCADE"), index=True, nullable=False)
+    bookmark_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bookmarks.id", ondelete="CASCADE"), index=True, nullable=False)
+    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    is_sent: Mapped[bool] = mapped_column(Boolean, default=False, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    user: Mapped["User"] = relationship("User")
+    bookmark: Mapped["Bookmark"] = relationship("Bookmark", back_populates="reminders", lazy="selectin")
 
 
 class EmbeddingCache(Base):

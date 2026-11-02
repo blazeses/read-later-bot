@@ -114,17 +114,15 @@ def get_bookmark_card_keyboard(
         InlineKeyboardButton(text=pin_text, callback_data=pin_cb),
     )
 
-    # 3. Read status and In-place text toggle (strictly <= 64 bytes)
-    status_text = "📖 В непрочитанные" if is_read else "✅ Прочитано"
-    status_cb = make_safe_callback("toggle_read", bookmark_id, np_safe, current_page, total_pages, ex_safe)
+    # 3. Actions: Text toggle/edit, tags, reminder, delete
     remind_cb = make_safe_callback("remind_menu", bookmark_id)
     delete_cb = make_safe_callback("delete", bookmark_id)
 
     if is_note:
         edit_note_cb = make_safe_callback("edit_note", bookmark_id)
         builder.row(
-            InlineKeyboardButton(text=status_text, callback_data=status_cb),
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=edit_note_cb),
+            InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
         )
         if is_long_note:
             full_note_cb = make_safe_callback("full_note", bookmark_id)
@@ -132,10 +130,7 @@ def get_bookmark_card_keyboard(
                 InlineKeyboardButton(text="📖 Читать полностью", callback_data=full_note_cb),
             )
         builder.row(
-            InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
             InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
-        )
-        builder.row(
             InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
         )
     else:
@@ -143,14 +138,11 @@ def get_bookmark_card_keyboard(
         view_label = "💡 Саммари" if showing_full_text else "📄 Содержание"
         toggle_view_cb = make_safe_callback("toggle_view", bookmark_id, view_text_mode, np_safe, current_page, total_pages, ex_safe)
         builder.row(
-            InlineKeyboardButton(text=status_text, callback_data=status_cb),
             InlineKeyboardButton(text=view_label, callback_data=toggle_view_cb),
-        )
-        builder.row(
             InlineKeyboardButton(text="🏷 Сменить тег", callback_data=tags_cb),
-            InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
         )
         builder.row(
+            InlineKeyboardButton(text="⏰ Напомнить", callback_data=remind_cb),
             InlineKeyboardButton(text="🗑 Удалить", callback_data=delete_cb),
         )
 
@@ -278,7 +270,6 @@ def get_bookmarks_list_keyboard(
             InlineKeyboardButton(text="📌 Закрепленные", callback_data="pl:1"),
         )
         builder.row(
-            InlineKeyboardButton(text="📖 Непрочитанные", callback_data="ul:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
     elif prefix in ("rl", "recent_list"):
@@ -287,7 +278,6 @@ def get_bookmarks_list_keyboard(
             InlineKeyboardButton(text="📌 Закрепленные", callback_data="pl:1"),
         )
         builder.row(
-            InlineKeyboardButton(text="📖 Только непрочитанные", callback_data="ul:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
     elif prefix in ("pl", "pinned_list"):
@@ -296,7 +286,6 @@ def get_bookmarks_list_keyboard(
             InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1"),
         )
         builder.row(
-            InlineKeyboardButton(text="📖 Непрочитанные", callback_data="ul:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
     elif prefix in ("ul", "unread_list"):

@@ -69,3 +69,75 @@ def parse_date_range_from_query(query: str) -> Tuple[str, Optional[datetime], Op
             break
 
     return clean_query.strip(), date_from, date_to
+
+
+MSK_TZ = timezone(timedelta(hours=3))
+
+
+def parse_user_reminder_time(text: str, base_tz: timezone = MSK_TZ) -> Tuple[Optional[datetime], Optional[str]]:
+    """
+    Parses user natural language reminder time (e.g. '15 мин', 'через 2 часа', '21:00', 'завтра 12:00').
+    Enforces minimum threshold of 15 minutes.
+    Returns (target_utc_datetime, error_message_or_none).
+    """
+    clean = text.strip().lower()
+    now_utc = datetime.now(timezone.utc)
+    now_local = datetime.now(base_tz)
+
+    # 1. Direct minutes regex: '15 мин', 'через 30 минут', '45m'
+    m_min = re.match(r"^(?:через\s+)?(\d+)\s*(?:мин(?:ут[ыа]?)?|m|min)$", clean)
+    if m_min:
+        mins = int(m_min.group(1))
+        if mins < 15:
+            return None, "Минимальное время напоминания — не менее 15 минут от текущего момента."
+        return now_utc + timedelta(minutes=mins), None
+
+    # 2. Direct hours regex: '1 ч', '2 часа', 'через 1.5 часа'
+    m_hr = re.match(r"^(?:через\s+)?(\d+(?:[.,]\d+)?)\s*(?:ч(?:ас(?:а|ов)?)?|h|hour)$", clean)
+    if m_hr:
+        hrs = float(m_hr.group(1).replace(",", "."))
+        mins = int(hrs * 60)
+        if mins < 15:
+            return None, "Минимальное время напоминания — не менее 15 минут от текущего момента."
+        return now_utc + timedelta(minutes=mins), None
+
+    # 3. Direct days regex: 'через 2 дня', '3 дня'
+    m_day = re.match(r"^(?:через\s+)?(\d+)\s*(?:дн(?:ей|я)|день|д|days?)$", clean)
+    if m_day:
+        days = int(m_day.group(1))
+        target_local = (now_local + timedelta(days=days)).replace(hour=10, minute=0, second=0, microsecond=0)
+        return target_local.astimezone(timezone.utc), None
+
+    # 4. Pure time of day HH:MM (e.g. '19:30', '21:00')
+    m_time = re.match(r"^(?:в\s+)?([01]?\d|2[0-3])[:.]([0-5]\d)$", clean)
+    if m_time:
+        h, m = int(m_time.group(1)), int(m_time.group(2))
+        target_local = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
+        # If specified time today is within 15 minutes or in the past, shift to tomorrow
+        if target_local <= now_local + timedelta(minutes=14, seconds=45):
+            target_local += timedelta(days=1)
+        target_utc = target_local.astimezone(timezone.utc)
+        return target_utc, None
+
+    # 5. Fallback: robust dateparser with Russian & English
+    try:
+        import dateparser
+        parsed = dateparser.parse(
+            clean,
+            languages=["ru", "en"],
+            settings={
+                "PREFER_DATES_FROM": "future",
+                "TIMEZONE": "+0300",
+                "RETURN_AS_TIMEZONE_AWARE": True,
+            },
+        )
+        if parsed:
+            target_utc = parsed.astimezone(timezone.utc)
+            if target_utc < now_utc + timedelta(minutes=14, seconds=45):
+                return None, "Минимальное время напоминания — не менее 15 минут от текущего момента. Укажите время позже."
+            return target_utc, None
+    except Exception:
+        pass
+
+    return None, "Не удалось распознать время. Напишите, например: «15 минут», «через 2 часа», «завтра в 14:00» или «21:30»."
+

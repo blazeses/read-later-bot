@@ -79,6 +79,7 @@ except ImportError:
     sys.modules["aiogram.fsm.state"] = mock_fsm_state
     sys.modules["aiogram.fsm.context"] = MagicMock()
     sys.modules["aiogram.filters"] = MagicMock()
+if "sqlalchemy" not in sys.modules:
     sys.modules["sqlalchemy"] = MagicMock()
     sys.modules["sqlalchemy.ext"] = MagicMock()
     sys.modules["sqlalchemy.ext.asyncio"] = MagicMock()
@@ -186,13 +187,11 @@ def test_favorites_list_keyboard():
 
     assert "🕒 Все недавние" in texts
     assert "📌 Закрепленные" in texts
-    assert "📖 Непрочитанные" in texts
     assert "🎲 Случайная" in texts
 
     # Verify callbacks
     assert any(b.callback_data == "rl:1" for b in all_btns)
     assert any(b.callback_data == "pl:1" for b in all_btns)
-    assert any(b.callback_data == "ul:1" for b in all_btns)
 
     for cb in cbs:
         assert len(cb.encode("utf-8")) <= 64

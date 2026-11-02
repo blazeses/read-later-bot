@@ -65,7 +65,7 @@ async def cb_show_demo_bookmark(callback: CallbackQuery):
     demo_text = (
         "🌐 <b>Статья</b> | ⏱ ~4 мин | 👤 Martin Fowler | 🌐 martinfowler.com\n"
         "📌 <b>Архитектура современных AI-агентов и паттерн Memory Bank</b>\n\n"
-        "Статус: 📖 Не прочитано | #ai #архитектура #deepseek\n\n"
+        "Теги: #ai #архитектура #deepseek\n\n"
         "📄 <b>Содержание:</b>\n"
         "Традиционные LLM ограничены размером контекста, поэтому память агента выносится во внешний векторный индекс. "
         "Паттерн Memory Bank разделяет кратковременную оперативную память диалога и долговременную базу знаний. "
@@ -268,9 +268,9 @@ async def cmd_help(message: Message):
         "📥 <code>/bookmarks</code> — открыть список сохраненных материалов\n"
         "🎬 <code>/yoink &lt;ссылка&gt;</code> — скачать видео или аудио (TikTok, Insta, X, VK и др.)\n"
         "🔍 <code>/search &lt;запрос&gt;</code> — умный семантический поиск\n"
-        "🎲 <code>/random</code> — случайный непрочитанный материал\n"
+        "🎲 <code>/random</code> — случайный сохраненный материал\n"
         "🏷 <code>/tags</code> — просмотр и фильтрация по тегам\n"
-        "☕️ <code>/digest</code> — еженедельный дайджест 3 непрочитанных закладок\n"
+        "☕️ <code>/digest</code> — еженедельный дайджест сохраненных закладок\n"
         "📊 <code>/stats</code> — статистика вашей базы знаний\n"
         "💾 <code>/export</code> — выгрузка в Markdown (Obsidian), CSV или JSON\n"
         "📱 <code>/menu</code> — показать кнопки главного меню\n"
@@ -288,8 +288,8 @@ async def cmd_stats(message: Message, session: AsyncSession):
     text = (
         "📊 <b>Ваша статистика базы знаний:</b>\n\n"
         f"📚 Всего закладок: <b>{stats['total']}</b>\n"
-        f"⏳ Непрочитано: <b>{stats['unread']}</b>\n"
-        f"✅ Прочитано: <b>{stats['read']}</b>\n"
+        f"📌 Закрепленных: <b>{stats.get('pinned', 0)}</b>\n"
+        f"⏰ Активных напоминаний: <b>{stats.get('reminders_count', 0)}</b>\n"
         f"🏷 Уникальных тегов: <b>{stats['tags_count']}</b>"
     )
     await message.answer(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")

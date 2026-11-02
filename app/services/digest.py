@@ -56,17 +56,12 @@ class DigestScheduler:
 
             for user in users:
                 try:
-                    # Select up to 3 unread bookmarks
+                    # Select up to 3 bookmarks (randomly or oldest)
                     b_stmt = (
                         select(Bookmark)
                         .options(selectinload(Bookmark.tags))
-                        .where(
-                            and_(
-                                Bookmark.user_id == user.telegram_id,
-                                Bookmark.is_read.is_(False),
-                            )
-                        )
-                        .order_by(Bookmark.created_at.asc())
+                        .where(Bookmark.user_id == user.telegram_id)
+                        .order_by(Bookmark.created_at.desc())
                         .limit(3)
                     )
                     b_res = await session.execute(b_stmt)

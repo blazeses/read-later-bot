@@ -70,7 +70,16 @@ def render_bookmarks_list(
     lines = [f"{title_header} (всего: {total_count}, стр. {current_page}/{total_pages}):\n"]
 
     for idx, b in enumerate(bookmarks, start=1):
-        status_icon = "✅" if b.is_read else "📖"
+        type_icon = "📄"
+        if b.content_type == ContentType.NOTE:
+            type_icon = "💬"
+        elif b.content_type == ContentType.YOUTUBE:
+            type_icon = "🎬"
+        elif b.content_type == ContentType.DOCUMENT:
+            type_icon = "📁"
+        elif b.content_type == ContentType.TWEET:
+            type_icon = "🐦"
+
         safe_title = html.escape((b.title or "Без названия").strip())
         domain_str = html.escape(b.domain or "заметка")
         tags_str = " ".join([f"#{html.escape(t.name)}" for t in b.tags[:3]]) if b.tags else ""
@@ -88,7 +97,7 @@ def render_bookmarks_list(
 
         lines.append(
             f"<b>[{idx}]</b> {pin_badge}<b>{safe_title}</b>\n"
-            f"    {status_icon} 🌐 {domain_str} | ⏱ ~{b.reading_time_min} мин.{photos_note}{tags_part}\n"
+            f"    {type_icon} 🌐 {domain_str} | ⏱ ~{b.reading_time_min} мин.{photos_note}{tags_part}\n"
         )
 
     lines.append("👇 <b>Нажмите на кнопку с номером статьи ниже, чтобы открыть её:</b>")
@@ -190,21 +199,21 @@ async def cb_open_bookmark(callback: CallbackQuery, session: AsyncSession):
         await callback.answer(f"Не удалось открыть статью: {str(e)[:100]}", show_alert=True)
 
 
-# --- Unread Articles with Direct Selection ---
+# --- All Bookmarks / Backward-compatible Unread Route ---
 
 @router.message(Command("unread"))
 @router.message(F.text.in_({"📖 Непрочитанные", "Непрочитанные", "непрочитанные"}))
 async def cmd_unread(message: Message, session: AsyncSession):
     repo = BookmarkRepository(session)
-    bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, is_read=False, limit=PAGE_SIZE, offset=0)
+    bookmarks, total = await repo.list_bookmarks(user_id=message.from_user.id, limit=PAGE_SIZE, offset=0)
 
     if not bookmarks:
-        await message.answer("🎉 Отлично! У вас нет непрочитанных материалов.")
+        await message.answer("📥 У вас пока нет сохраненных материалов.")
         return
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
-    text = render_bookmarks_list(bookmarks, current_page=1, total_count=total, limit=PAGE_SIZE, is_unread_only=True)
-    kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="ul")
+    text = render_bookmarks_list(bookmarks, current_page=1, total_count=total, limit=PAGE_SIZE, is_unread_only=False)
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=1, total_pages=total_pages, prefix="rl")
     await message.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
 
@@ -213,15 +222,15 @@ async def cb_unread_list(callback: CallbackQuery, session: AsyncSession):
     page = int(callback.data.split(":")[1])
     offset = (page - 1) * PAGE_SIZE
     repo = BookmarkRepository(session)
-    bookmarks, total = await repo.list_bookmarks(user_id=callback.from_user.id, is_read=False, limit=PAGE_SIZE, offset=offset)
+    bookmarks, total = await repo.list_bookmarks(user_id=callback.from_user.id, limit=PAGE_SIZE, offset=offset)
 
     if not bookmarks:
-        await callback.answer("Непрочитанных закладок нет.", show_alert=True)
+        await callback.answer("Закладок нет.", show_alert=True)
         return
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
-    text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_unread_only=True)
-    kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="unread_list")
+    text = render_bookmarks_list(bookmarks, current_page=page, total_count=total, limit=PAGE_SIZE, is_unread_only=False)
+    kb = get_bookmarks_list_keyboard(bookmarks, current_page=page, total_pages=total_pages, prefix="rl")
 
     if callback.message.photo or callback.message.video or callback.message.animation:
         try:
@@ -361,10 +370,10 @@ async def cmd_random(message: Message, session: AsyncSession):
     history = _user_random_history.get(user_id, [])
 
     repo = BookmarkRepository(session)
-    bookmark = await repo.get_random_unread(user_id, exclude_ids=history)
+    bookmark = await repo.get_random_bookmark(user_id, exclude_ids=history)
 
     if not bookmark:
-        await message.answer("🎉 Непрочитанных закладок нет!")
+        await message.answer("📥 У вас пока нет сохраненных закладок!")
         return
 
     history.append(bookmark.id)
@@ -396,10 +405,10 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
     history = _user_random_history.get(user_id, [])
 
     repo = BookmarkRepository(session)
-    bookmark = await repo.get_random_unread(user_id, exclude_ids=history)
+    bookmark = await repo.get_random_bookmark(user_id, exclude_ids=history)
 
     if not bookmark:
-        await callback.answer("🎉 Непрочитанных закладок больше нет!", show_alert=True)
+        await callback.answer("📥 У вас пока нет закладок!", show_alert=True)
         return
 
     history.append(bookmark.id)

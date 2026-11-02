@@ -56,10 +56,11 @@ sys.modules["aiogram.fsm.context"] = MagicMock()
 sys.modules["aiogram.filters"] = MagicMock()
 sys.modules["aiogram.fsm"] = MagicMock()
 sys.modules["loguru"] = MagicMock()
-sys.modules["sqlalchemy"] = MagicMock()
-sys.modules["sqlalchemy.ext"] = MagicMock()
-sys.modules["sqlalchemy.ext.asyncio"] = MagicMock()
-sys.modules["sqlalchemy.orm"] = MagicMock()
+if "sqlalchemy" not in sys.modules:
+    sys.modules["sqlalchemy"] = MagicMock()
+    sys.modules["sqlalchemy.ext"] = MagicMock()
+    sys.modules["sqlalchemy.ext.asyncio"] = MagicMock()
+    sys.modules["sqlalchemy.orm"] = MagicMock()
 
 from enum import Enum
 class ContentType(str, Enum):

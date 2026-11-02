@@ -21,6 +21,7 @@ from app.db.models import (
     Bookmark,
     ContentType,
     EmbeddingCache,
+    Reminder,
     Tag,
     User,
     bookmark_tags,
@@ -361,7 +362,15 @@ class BookmarkRepository:
         user_id: int,
         exclude_ids: Optional[List[uuid.UUID]] = None,
     ) -> Optional[Bookmark]:
-        filters = [Bookmark.user_id == user_id, Bookmark.is_read.is_(False)]
+        """Returns a random bookmark for the user."""
+        return await self.get_random_bookmark(user_id, exclude_ids)
+
+    async def get_random_bookmark(
+        self,
+        user_id: int,
+        exclude_ids: Optional[List[uuid.UUID]] = None,
+    ) -> Optional[Bookmark]:
+        filters = [Bookmark.user_id == user_id]
         if exclude_ids:
             filters.append(Bookmark.id.not_in(exclude_ids))
 
@@ -375,12 +384,12 @@ class BookmarkRepository:
         res = await self.session.execute(stmt)
         bm = res.scalar_one_or_none()
 
-        # If all unread were excluded, reset exclusion and pick from all unread
+        # If all were excluded, pick from any bookmark of the user
         if not bm and exclude_ids:
             stmt_all = (
                 select(Bookmark)
                 .options(selectinload(Bookmark.tags))
-                .where(and_(Bookmark.user_id == user_id, Bookmark.is_read.is_(False)))
+                .where(Bookmark.user_id == user_id)
                 .order_by(func.random())
                 .limit(1)
             )
@@ -391,24 +400,27 @@ class BookmarkRepository:
 
     async def get_stats(self, user_id: int) -> Dict[str, int]:
         total_stmt = select(func.count(Bookmark.id)).where(Bookmark.user_id == user_id)
-        unread_stmt = select(func.count(Bookmark.id)).where(
-            and_(Bookmark.user_id == user_id, Bookmark.is_read.is_(False))
+        pinned_stmt = select(func.count(Bookmark.id)).where(
+            and_(Bookmark.user_id == user_id, Bookmark.is_pinned.is_(True))
         )
-        read_stmt = select(func.count(Bookmark.id)).where(
-            and_(Bookmark.user_id == user_id, Bookmark.is_read.is_(True))
+        reminders_stmt = select(func.count(Reminder.id)).where(
+            and_(Reminder.user_id == user_id, Reminder.is_sent.is_(False))
         )
         tags_stmt = select(func.count(Tag.id)).where(Tag.user_id == user_id)
 
         total = (await self.session.execute(total_stmt)).scalar() or 0
-        unread = (await self.session.execute(unread_stmt)).scalar() or 0
-        read = (await self.session.execute(read_stmt)).scalar() or 0
+        pinned = (await self.session.execute(pinned_stmt)).scalar() or 0
+        reminders_count = (await self.session.execute(reminders_stmt)).scalar() or 0
         tags_count = (await self.session.execute(tags_stmt)).scalar() or 0
 
         return {
             "total": total,
-            "unread": unread,
-            "read": read,
+            "pinned": pinned,
+            "reminders_count": reminders_count,
             "tags_count": tags_count,
+            # Backward-compatibility aliases
+            "unread": total,
+            "read": 0,
         }
 
     async def fulltext_search(
@@ -595,3 +607,88 @@ class EmbeddingCacheRepository:
             )
             self.session.add(entry)
         await self.session.flush()
+
+
+class ReminderRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_or_update(
+        self,
+        user_id: int,
+        bookmark_id: uuid.UUID,
+        remind_at: datetime,
+    ) -> Reminder:
+        # Check if an unsent reminder already exists for this bookmark
+        stmt = select(Reminder).where(
+            and_(
+                Reminder.user_id == user_id,
+                Reminder.bookmark_id == bookmark_id,
+                Reminder.is_sent.is_(False),
+            )
+        )
+        res = await self.session.execute(stmt)
+        reminder = res.scalar_one_or_none()
+        if reminder:
+            reminder.remind_at = remind_at
+        else:
+            reminder = Reminder(
+                user_id=user_id,
+                bookmark_id=bookmark_id,
+                remind_at=remind_at,
+                is_sent=False,
+            )
+            self.session.add(reminder)
+        await self.session.flush()
+        return reminder
+
+    async def get_due_reminders(self, cutoff: datetime) -> List[Reminder]:
+        stmt = (
+            select(Reminder)
+            .options(
+                selectinload(Reminder.bookmark).selectinload(Bookmark.tags)
+            )
+            .where(
+                and_(
+                    Reminder.is_sent.is_(False),
+                    Reminder.remind_at <= cutoff,
+                )
+            )
+            .order_by(Reminder.remind_at.asc())
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def mark_as_sent(self, reminder_id: uuid.UUID) -> None:
+        stmt = select(Reminder).where(Reminder.id == reminder_id)
+        res = await self.session.execute(stmt)
+        reminder = res.scalar_one_or_none()
+        if reminder:
+            reminder.is_sent = True
+            await self.session.flush()
+
+    async def delete_for_bookmark(self, user_id: int, bookmark_id: uuid.UUID) -> bool:
+        stmt = delete(Reminder).where(
+            and_(
+                Reminder.user_id == user_id,
+                Reminder.bookmark_id == bookmark_id,
+                Reminder.is_sent.is_(False),
+            )
+        )
+        res = await self.session.execute(stmt)
+        await self.session.flush()
+        return res.rowcount > 0
+
+    async def get_active_for_bookmark(
+        self, user_id: int, bookmark_id: uuid.UUID
+    ) -> Optional[Reminder]:
+        stmt = select(Reminder).where(
+            and_(
+                Reminder.user_id == user_id,
+                Reminder.bookmark_id == bookmark_id,
+                Reminder.is_sent.is_(False),
+            )
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+

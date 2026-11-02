@@ -15,6 +15,7 @@ from app.providers.registry import get_embedding_provider, get_vector_store
 from sqlalchemy import text
 from app.services.digest import DigestScheduler
 from app.services.ingest import IngestionQueueService
+from app.services.reminder import ReminderScheduler
 
 
 async def init_databases():
@@ -95,6 +96,9 @@ async def main():
     digest_scheduler = DigestScheduler(bot=bot)
     digest_scheduler.start()
 
+    reminder_scheduler = ReminderScheduler(bot=bot)
+    reminder_scheduler.start()
+
     # 5. Register Routers (Order matters: catch-all bookmarks router is last)
     dp.include_router(base.router)
     dp.include_router(inline.router)
@@ -150,6 +154,7 @@ async def main():
         log.info("Shutting down bot and background services...")
         await ingest_service.stop()
         digest_scheduler.stop()
+        reminder_scheduler.stop()
         await bot.session.close()
         await engine.dispose()
         log.info("Bot stopped cleanly.")
