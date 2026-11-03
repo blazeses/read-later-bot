@@ -141,3 +141,57 @@ def parse_user_reminder_time(text: str, base_tz: timezone = MSK_TZ) -> Tuple[Opt
 
     return None, "Не удалось распознать время. Напишите, например: «15 минут», «через 2 часа», «завтра в 14:00» или «21:30»."
 
+
+def try_parse_direct_reminder(text: str, base_tz: timezone = MSK_TZ) -> Optional[Tuple[datetime, str, Optional[str]]]:
+    """
+    Parses direct conversational commands like:
+    - 'напомни через 30 минут позвонить врачу'
+    - 'напомни завтра в 15:00 сдать отчет'
+    - 'напомни мне в 21:00 выключить свет'
+    Returns (target_utc_datetime, task_text, error_message_if_any) or None if not a reminder command.
+    """
+    clean = text.strip()
+    m = re.match(r"^(?:напомни(?:ть)?|remind(?:\s+me)?)\s+(?:мне\s+)?(.+)$", clean, re.IGNORECASE)
+    if not m:
+        return None
+    rest = m.group(1).strip()
+
+    # 1. Relative: 'через X (мин|час|дней) <task>'
+    m_rel = re.match(
+        r"^(через\s+\d+(?:[.,]\d+)?\s*(?:мин(?:ут[ыа]?)?|ч(?:ас(?:а|ов)?)?|дн(?:ей|я)|день))\s+(?:что\s+|про\s+|о\s+|:\s*)?(.+)$",
+        rest,
+        re.IGNORECASE,
+    )
+    if m_rel:
+        time_part, task_part = m_rel.group(1), m_rel.group(2)
+        dt, err = parse_user_reminder_time(time_part, base_tz=base_tz)
+        return dt, task_part.strip(), err
+
+    # 2. Time of day: 'завтра/сегодня [в HH:MM] <task>'
+    m_day = re.match(
+        r"^(завтра|сегодня)?(?:\s*в\s+([01]?\d|2[0-3])[:.]([0-5]\d))\s+(?:что\s+|про\s+|о\s+|:\s*)?(.+)$",
+        rest,
+        re.IGNORECASE,
+    )
+    if m_day:
+        day_word = m_day.group(1) or ""
+        time_part = f"{day_word} в {m_day.group(2)}:{m_day.group(3)}".strip()
+        task_part = m_day.group(4)
+        dt, err = parse_user_reminder_time(time_part, base_tz=base_tz)
+        return dt, task_part.strip(), err
+
+    # 3. Day only: 'завтра <task>'
+    m_tom = re.match(
+        r"^(завтра(?:\s+утром|\s+вечером|\s+днем)?)\s+(?:что\s+|про\s+|о\s+|:\s*)?(.+)$",
+        rest,
+        re.IGNORECASE,
+    )
+    if m_tom:
+        time_part = m_tom.group(1)
+        task_part = m_tom.group(2)
+        dt, err = parse_user_reminder_time(time_part, base_tz=base_tz)
+        return dt, task_part.strip(), err
+
+    return None
+
+

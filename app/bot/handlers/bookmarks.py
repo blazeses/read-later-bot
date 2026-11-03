@@ -2,13 +2,14 @@ import asyncio
 import html
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from aiogram import Bot, F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, Message
@@ -24,7 +25,7 @@ from app.extractors.twitter import TWITTER_URL_REGEX
 from app.extractors.url_utils import extract_urls, normalize_emoji_digits
 from app.extractors.youtube import YOUTUBE_REGEX
 from app.providers.registry import get_embedding_provider, get_vector_store
-from app.services.date_parser import MSK_TZ, parse_user_reminder_time
+from app.services.date_parser import MSK_TZ, parse_user_reminder_time, try_parse_direct_reminder
 from app.services.ingest import IngestTask, IngestionQueueService
 from app.services.video_downloader import is_video_url, download_video, download_audio
 
@@ -268,7 +269,112 @@ async def process_and_send_video(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-@router.message(F.text & ~F.text.startswith("/") & ~F.text.in_(MENU_BUTTON_TEXTS))
+# --- Custom Reminder FSM Handlers (must precede catch-all note handler) ---
+
+@router.callback_query(F.data == "cancel_custom_remind")
+async def cb_cancel_custom_remind(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.answer("Установка напоминания отменена.")
+
+
+@router.message(StateFilter(ReminderState.waiting_for_custom_time))
+async def process_custom_reminder_time(message: Message, state: FSMContext, session: AsyncSession):
+    if not message.text:
+        await message.answer("Пожалуйста, отправьте текстовое сообщение со временем (например: <code>через 30 минут</code> или <code>завтра в 14:00</code>).", parse_mode="HTML")
+        return
+
+    data = await state.get_data()
+    bookmark_id_str = data.get("bookmark_id")
+    if not bookmark_id_str:
+        await state.clear()
+        await message.answer("Сессия установки напоминания устарела. Откройте карточку материала снова.")
+        return
+
+    bookmark_id = uuid.UUID(bookmark_id_str)
+    target_utc, err_msg = parse_user_reminder_time(message.text)
+    if err_msg or not target_utc:
+        await message.answer(f"⚠️ {err_msg or 'Не удалось распознать время.'}\n\nПопробуйте ещё раз или нажмите «Отмена»:", parse_mode="HTML")
+        return
+
+    await state.clear()
+    repo = ReminderRepository(session)
+    await repo.create_or_update(message.from_user.id, bookmark_id, target_utc)
+    await session.commit()
+
+    local_dt = target_utc.astimezone(MSK_TZ).strftime("%d.%m.%Y в %H:%M")
+    await message.answer(
+        f"✅ <b>Напоминание успешно установлено!</b>\n\n⏰ Бот пришлёт этот материал: <b>{local_dt}</b> (МСК).",
+        parse_mode="HTML"
+    )
+
+
+# --- Conversational direct reminder: "напомни через 30 минут позвонить..." ---
+
+DIRECT_REMINDER_REGEX = re.compile(r"^(?:напомни(?:ть)?|remind(?:\s+me)?)\s+", re.IGNORECASE)
+
+
+@router.message(StateFilter(None), F.text.regexp(DIRECT_REMINDER_REGEX))
+async def handle_direct_reminder(message: Message, session: AsyncSession):
+    text = normalize_emoji_digits(message.text.strip())
+    parsed = try_parse_direct_reminder(text)
+    if not parsed:
+        return await handle_text_or_urls(message, session)
+
+    target_utc, task_text, err_msg = parsed
+    if err_msg or not target_utc:
+        await message.answer(f"⚠️ {err_msg or 'Не удалось распознать время.'}\n\n<i>Минимальный интервал — не менее 15 минут.</i>", parse_mode="HTML")
+        return
+
+    if not task_text:
+        task_text = "Напоминание"
+
+    # Save note bookmark
+    repo = BookmarkRepository(session)
+    user_repo = UserRepository(session)
+    await user_repo.get_or_create(message.from_user.id)
+
+    bookmark = await repo.create(
+        user_id=message.from_user.id,
+        content_type=ContentType.NOTE,
+        title=task_text[:100],
+        full_text=task_text,
+        user_comment=task_text,
+        reading_time_min=1,
+    )
+
+    # Save reminder
+    rem_repo = ReminderRepository(session)
+    await rem_repo.create_or_update(message.from_user.id, bookmark.id, target_utc)
+    await session.commit()
+
+    local_dt = target_utc.astimezone(MSK_TZ).strftime("%d.%m.%Y в %H:%M")
+    kb = get_bookmark_card_keyboard(
+        bookmark.id,
+        url=None,
+        is_read=False,
+        showing_full_text=True,
+        photo_count=0,
+        is_note=True,
+        is_fav=False,
+        has_file=False,
+        is_pinned=False,
+        is_long_note=False,
+    )
+
+    await message.answer(
+        f"✅ <b>Заметка сохранена и напоминание установлено!</b>\n\n"
+        f"📌 <b>{html.escape(task_text)}</b>\n"
+        f"⏰ Напоминание придет: <b>{local_dt}</b> (МСК)",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@router.message(StateFilter(None), F.text & ~F.text.startswith("/") & ~F.text.in_(MENU_BUTTON_TEXTS))
 async def handle_text_or_urls(message: Message, session: AsyncSession):
     if not ingest_service:
         await message.answer("Сервис обработки временно недоступен.")
@@ -382,7 +488,7 @@ async def handle_text_or_urls(message: Message, session: AsyncSession):
         await message.answer("⚠️ Не удалось принять сообщение. Пожалуйста, отправьте ссылку или текст ещё раз.")
 
 
-@router.message(F.photo | F.video | F.animation)
+@router.message(StateFilter(None), F.photo | F.video | F.animation)
 async def handle_media_upload(message: Message):
     if not ingest_service:
         await message.answer("Сервис обработки недоступен.")
@@ -513,7 +619,7 @@ async def handle_media_upload(message: Message):
 ARCHIVE_EXTENSIONS = {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"}
 
 
-@router.message(F.document)
+@router.message(StateFilter(None), F.document)
 async def handle_document_upload(message: Message, session: AsyncSession):
     doc = message.document
     filename = doc.file_name or "document"
@@ -878,47 +984,6 @@ async def cb_set_remind(callback: CallbackQuery, session: AsyncSession, state: F
     except Exception:
         pass
     await callback.answer(f"⏰ Напоминание установлено на {label}!", show_alert=True)
-
-
-@router.callback_query(F.data == "cancel_custom_remind")
-async def cb_cancel_custom_remind(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-    await callback.answer("Установка напоминания отменена.")
-
-
-@router.message(ReminderState.waiting_for_custom_time)
-async def process_custom_reminder_time(message: Message, state: FSMContext, session: AsyncSession):
-    if not message.text:
-        await message.answer("Пожалуйста, отправьте текстовое сообщение со временем (например: <code>через 30 минут</code> или <code>завтра в 14:00</code>).", parse_mode="HTML")
-        return
-
-    data = await state.get_data()
-    bookmark_id_str = data.get("bookmark_id")
-    if not bookmark_id_str:
-        await state.clear()
-        await message.answer("Сессия установки напоминания устарела. Откройте карточку материала снова.")
-        return
-
-    bookmark_id = uuid.UUID(bookmark_id_str)
-    target_utc, err_msg = parse_user_reminder_time(message.text)
-    if err_msg or not target_utc:
-        await message.answer(f"⚠️ {err_msg or 'Не удалось распознать время.'}\n\nПопробуйте ещё раз или нажмите «Отмена»:", parse_mode="HTML")
-        return
-
-    await state.clear()
-    repo = ReminderRepository(session)
-    await repo.create_or_update(message.from_user.id, bookmark_id, target_utc)
-    await session.commit()
-
-    local_dt = target_utc.astimezone(MSK_TZ).strftime("%d.%m.%Y в %H:%M")
-    await message.answer(
-        f"✅ <b>Напоминание успешно установлено!</b>\n\n⏰ Бот пришлёт этот материал: <b>{local_dt}</b> (МСК).",
-        parse_mode="HTML"
-    )
 
 
 @router.callback_query(F.data.startswith("snooze:"))
