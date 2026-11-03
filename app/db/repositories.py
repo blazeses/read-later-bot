@@ -201,6 +201,7 @@ class BookmarkRepository:
         telegram_document_id: Optional[str] = None,
         photos_json: Optional[str] = None,
         is_pinned: bool = False,
+        category: Optional[str] = None,
     ) -> Bookmark:
         bookmark = Bookmark(
             id=uuid.uuid4(),
@@ -222,13 +223,14 @@ class BookmarkRepository:
             telegram_document_id=telegram_document_id,
             photos_json=photos_json,
             is_pinned=is_pinned,
+            category=category,
         )
 
         # Compute tsvector in Postgres if dialect supports it
         try:
-            dialect = getattr(getattr(self.session, "bind", None), "dialect", None)
-            dialect_name = dialect.name if dialect else ""
-            if dialect_name == "postgresql" or "postgresql" in settings.DATABASE_URL:
+            bind = self.session.bind or getattr(getattr(self.session, "sync_session", None), "bind", None)
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+            if dialect_name == "postgresql":
                 text_for_search = f"{title or ''} {summary or ''} {(full_text or '')[:5000]}"
                 bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
         except Exception:
@@ -265,9 +267,9 @@ class BookmarkRepository:
         if full_text is not None:
             bookmark.full_text = full_text
             try:
-                dialect = getattr(getattr(self.session, "bind", None), "dialect", None)
-                dialect_name = dialect.name if dialect else ""
-                if dialect_name == "postgresql" or "postgresql" in settings.DATABASE_URL:
+                bind = self.session.bind or getattr(getattr(self.session, "sync_session", None), "bind", None)
+                dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+                if dialect_name == "postgresql":
                     text_for_search = f"{bookmark.title or ''} {bookmark.summary or ''} {full_text[:5000]}"
                     bookmark.tsv_content = func.to_tsvector("russian", text_for_search)
             except Exception:
@@ -315,6 +317,7 @@ class BookmarkRepository:
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         is_pinned: Optional[bool] = None,
+        category: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
     ) -> Tuple[List[Bookmark], int]:
@@ -324,6 +327,8 @@ class BookmarkRepository:
             filters.append(Bookmark.is_read == is_read)
         if is_pinned is not None:
             filters.append(Bookmark.is_pinned == is_pinned)
+        if category is not None:
+            filters.append(Bookmark.category == category)
         if content_type is not None:
             filters.append(Bookmark.content_type == content_type)
         if date_from is not None:
@@ -356,6 +361,25 @@ class BookmarkRepository:
         items = list(items_res.scalars().all())
         total = count_res.scalar() or 0
         return items, total
+
+    async def get_categories_with_counts(self, user_id: int) -> List[Tuple[str, int]]:
+        stmt = (
+            select(Bookmark.category, func.count(Bookmark.id).label("count"))
+            .where(and_(Bookmark.user_id == user_id, Bookmark.category.is_not(None)))
+            .group_by(Bookmark.category)
+            .order_by(desc("count"))
+        )
+        res = await self.session.execute(stmt)
+        return [(row[0], row[1]) for row in res.all() if row[0]]
+
+    async def get_bookmarks_by_category(
+        self,
+        user_id: int,
+        category: str,
+        limit: int = 5,
+        offset: int = 0,
+    ) -> Tuple[List[Bookmark], int]:
+        return await self.list_bookmarks(user_id=user_id, category=category, limit=limit, offset=offset)
 
     async def get_random_unread(
         self,

@@ -67,11 +67,13 @@ class OpenAILLMProvider(BaseLLMProvider):
                 summary = data.get("summary", "").strip() or title
                 tags = [t.strip().lower() for t in data.get("tags", []) if t.strip()]
                 reading_time = data.get("reading_time_min", default_reading_time)
+                category = data.get("category")
 
                 return LLMEnrichmentResult(
                     summary=summary,
                     tags=tags[:7] if tags else ["закладка"],
                     reading_time_min=max(1, int(reading_time)),
+                    category=category,
                 )
             except Exception as e:
                 log.warning(f"OpenAI LLM attempt {attempt + 1} failed: {e}")

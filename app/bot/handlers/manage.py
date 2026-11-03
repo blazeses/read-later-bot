@@ -435,6 +435,69 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
+# --- Categories Browsing ---
+
+@router.message(Command("categories"))
+@router.message(F.text.in_({"📁 Категории", "Категории", "категории"}))
+async def cmd_categories(message: Message, session: AsyncSession):
+    repo = BookmarkRepository(session)
+    cats = await repo.get_categories_with_counts(message.from_user.id)
+    if not cats:
+        await message.answer("📁 В вашей базе пока нет категоризированных закладок. Сохраните любую ссылку или заметку, и бот автоматически определит её рубрику!")
+        return
+
+    from app.bot.keyboards import get_categories_keyboard
+    kb = get_categories_keyboard(cats)
+    total_cats = sum(c for _, c in cats)
+    await message.answer(
+        f"📁 <b>Категории материалов ({total_cats} закладок):</b>\n\n"
+        "Выберите рубрику для просмотра сохранённых статей и заметок:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("cat_sel:"))
+async def cb_category_select(callback: CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    category_name = parts[1]
+    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+
+    repo = BookmarkRepository(session)
+    limit = 5
+    offset = (page - 1) * limit
+    bookmarks, total = await repo.get_bookmarks_by_category(callback.from_user.id, category_name, limit=limit, offset=offset)
+
+    if not bookmarks:
+        await callback.answer("В этой категории пока нет материалов.", show_alert=True)
+        return
+
+    import math
+    total_pages = max(1, math.ceil(total / limit))
+
+    from app.bot.keyboards import get_bookmarks_list_keyboard
+    lines = [f"📁 <b>Рубрика: {category_name}</b> (Стр. {page}/{total_pages}, всего: {total})\n"]
+    for idx, b in enumerate(bookmarks, start=1):
+        title = html.escape(b.title or "Без названия")
+        lines.append(f"<b>[{idx}]</b> {title}")
+
+    lines.append("\nНажмите на номер статьи ниже, чтобы открыть карточку:")
+    text = "\n".join(lines)
+
+    kb = get_bookmarks_list_keyboard(
+        bookmarks=bookmarks,
+        current_page=page,
+        total_pages=total_pages,
+        prefix=f"cat_sel:{category_name}",
+    )
+
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
 # --- Tags Filter and Management ---
 
 @router.message(Command("tags"))

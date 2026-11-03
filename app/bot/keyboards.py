@@ -14,6 +14,7 @@ def get_main_reply_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.row(
         KeyboardButton(text="📥 Мои закладки"),
+        KeyboardButton(text="📁 Категории"),
         KeyboardButton(text="⭐ Избранное"),
     )
     builder.row(
@@ -357,4 +358,16 @@ def get_page_picker_keyboard(
         cancel_cb = f"{prefix}:{current_page}"
 
     builder.row(InlineKeyboardButton(text="« Отмена", callback_data=cancel_cb))
+    return builder.as_markup()
+
+
+def get_categories_keyboard(categories_with_counts: List[Tuple[str, int]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for cat_name, count in categories_with_counts:
+        builder.button(
+            text=f"{cat_name} ({count})",
+            callback_data=f"cat_sel:{cat_name[:30]}:1",
+        )
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="📥 Все закладки", callback_data="bm_list:all:1"))
     return builder.as_markup()

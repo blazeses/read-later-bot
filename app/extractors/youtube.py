@@ -28,7 +28,10 @@ def _fetch_subtitles_sync(video_id: str) -> tuple[str, Optional[str]]:
     """
     languages_priority = ["ru", "en", "uk", "be", "de", "fr", "es"]
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        if hasattr(YouTubeTranscriptApi, "list_transcripts"):
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        else:
+            transcript_list = YouTubeTranscriptApi().list(video_id)
         
         # 1. Попытка найти ручные субтитры
         transcript = None

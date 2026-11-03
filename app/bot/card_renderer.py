@@ -85,14 +85,10 @@ def build_card_text(
         type_badge = "📦 Архив"
     tags_str = " ".join([f"#{html.escape(t.name)}" for t in bookmark.tags]) if bookmark.tags else ""
     pin_badge = "📌 Закреплено" if getattr(bookmark, "is_pinned", False) else ""
-    if pin_badge and tags_str:
-        status_line = f"Статус: {pin_badge} | {tags_str}"
-    elif pin_badge:
-        status_line = f"Статус: {pin_badge}"
-    elif tags_str:
-        status_line = f"Теги: {tags_str}"
-    else:
-        status_line = ""
+    cat_badge = f"📁 {html.escape(bookmark.category)}" if getattr(bookmark, "category", None) else ""
+
+    status_parts = [p for p in (cat_badge, pin_badge, tags_str) if p]
+    status_line = " | ".join(status_parts)
 
     author_clean = html.escape(bookmark.author.strip()) if bookmark.author else ""
     author_str = f" | 👤 {author_clean}" if author_clean else ""

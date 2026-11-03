@@ -996,7 +996,25 @@ async def cb_snooze(callback: CallbackQuery, session: AsyncSession):
     now_utc = datetime.now(timezone.utc)
     now_local = datetime.now(MSK_TZ)
 
-    if mode == "1h":
+    if mode == "dismiss":
+        await repo.delete_for_bookmark(callback.from_user.id, bookmark_id)
+        await session.commit()
+        await callback.answer("✅ Напоминание завершено!", show_alert=True)
+        try:
+            if callback.message:
+                await callback.message.edit_text(
+                    text=f"{callback.message.html_text}\n\n<i>✅ Напоминание выполнено и завершено.</i>",
+                    parse_mode="HTML",
+                    reply_markup=None,
+                )
+        except Exception:
+            pass
+        return
+
+    if mode == "15m":
+        target_utc = now_utc + timedelta(minutes=15)
+        label = "15 минут"
+    elif mode == "1h":
         target_utc = now_utc + timedelta(hours=1)
         label = "1 час"
     elif mode == "tomorrow":
@@ -1011,6 +1029,15 @@ async def cb_snooze(callback: CallbackQuery, session: AsyncSession):
     await session.commit()
 
     await callback.answer(f"⏰ Напоминание отложено на {label}!", show_alert=True)
+    try:
+        if callback.message:
+            await callback.message.edit_text(
+                text=f"{callback.message.html_text}\n\n<i>⏳ Отложено на {label}.</i>",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("open_bm:"))
@@ -1048,6 +1075,81 @@ async def cb_open_bm(callback: CallbackQuery, session: AsyncSession):
     )
     await send_card_message(callback.message, callback.message.chat.id, bookmark, kb, showing_full_text=True)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("refresh_summary:"))
+async def cb_refresh_summary(callback: CallbackQuery, session: AsyncSession):
+    parts = callback.data.split(":")
+    bookmark_id = uuid.UUID(parts[1])
+    repo = BookmarkRepository(session)
+    bookmark = await repo.get_by_id(bookmark_id, callback.from_user.id)
+    if not bookmark:
+        await callback.answer("Закладка не найдена.", show_alert=True)
+        return
+
+    if not bookmark.url:
+        await callback.answer("У этой заметки нет URL для повторного анализа.", show_alert=True)
+        return
+
+    await callback.answer("🔄 Обновляю саммари...", show_alert=False)
+    if callback.message:
+        try:
+            await callback.message.edit_text("⏳ <b>Повторно извлекаю контент и обновляю анализ...</b>", parse_mode="HTML")
+        except Exception:
+            pass
+
+    try:
+        from app.extractors.registry import extractor_registry
+        from app.providers.registry import get_llm_provider
+        from app.db.repositories import TagRepository
+        
+        extracted = await extractor_registry.extract_url(bookmark.url)
+        full_text = extracted.text or bookmark.full_text or ""
+        tag_repo = TagRepository(session)
+        existing_tags_objs = await tag_repo.get_user_tags(callback.from_user.id)
+        existing_tag_names = [t.name for t in existing_tags_objs]
+
+        llm = get_llm_provider()
+        enrichment = await llm.enrich_bookmark(
+            title=extracted.title or bookmark.title or "Без названия",
+            text=full_text,
+            existing_tags=existing_tag_names,
+        )
+
+        bookmark.summary = enrichment.summary
+        bookmark.reading_time_min = enrichment.reading_time_min
+        if extracted.title:
+            bookmark.title = extracted.title
+
+        new_tags = await tag_repo.get_or_create_tags(callback.from_user.id, enrichment.tags)
+        bookmark.tags = new_tags
+        await session.commit()
+
+        photo_count = 1 if (bookmark.telegram_photo_id or bookmark.image_url or getattr(bookmark, "telegram_video_id", None)) else 0
+        has_file = bool(getattr(bookmark, "telegram_document_id", None))
+        is_fav = any(t.name.lower() == "избранное" for t in bookmark.tags)
+        kb = get_bookmark_card_keyboard(
+            bookmark.id,
+            url=bookmark.url,
+            is_read=False,
+            showing_full_text=False,
+            photo_count=photo_count,
+            is_note=False,
+            is_fav=is_fav,
+            has_file=has_file,
+            is_pinned=getattr(bookmark, "is_pinned", False),
+            is_long_note=check_is_long_note(bookmark),
+        )
+        if callback.message:
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
+            await send_card_message(callback.message, callback.message.chat.id, bookmark, kb, showing_full_text=False)
+    except Exception as e:
+        log.exception(f"Error refreshing summary for bookmark {bookmark.id}: {e}")
+        if callback.message:
+            await callback.message.edit_text(f"⚠️ Ошибка при обновлении саммари: {e}")
 
 
 @router.callback_query(F.data == "close_remind_menu")

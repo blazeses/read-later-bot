@@ -75,13 +75,25 @@ class IngestionQueueService:
     async def enqueue(self, task: IngestTask):
         await self.queue.put(task)
 
-    async def _safe_edit_status(self, chat_id: int, message_id: int, text: str):
+    async def _safe_edit_status(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        reply_markup=None,
+    ):
+        try:
+            from aiogram.enums import ChatAction
+            await self.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception:
+            pass
         try:
             await self.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
                 parse_mode="HTML",
+                reply_markup=reply_markup,
             )
         except Exception:
             pass
@@ -133,24 +145,31 @@ class IngestionQueueService:
                 if norm_url:
                     existing = await bookmark_repo.get_by_normalized_url(norm_url, task.user_id)
                     if existing:
-                        from app.bot.card_renderer import send_card_message
-                        from app.bot.keyboards import get_bookmark_card_keyboard
-                        try:
-                            await self.bot.delete_message(chat_id=task.chat_id, message_id=task.status_message_id)
-                        except Exception:
-                            pass
-                        photo_count = 1 if (existing.telegram_photo_id or existing.image_url or getattr(existing, "telegram_video_id", None)) else 0
-                        has_file = bool(getattr(existing, "telegram_document_id", None))
-                        kb = get_bookmark_card_keyboard(
-                            existing.id,
-                            existing.url,
-                            existing.is_read,
-                            photo_count=photo_count,
-                            is_note=(existing.content_type == ContentType.NOTE),
-                            has_file=has_file,
-                            is_pinned=getattr(existing, "is_pinned", False),
+                        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+                        date_str = (
+                            existing.created_at.strftime("%d.%m.%Y в %H:%M")
+                            if hasattr(existing, "created_at") and existing.created_at
+                            else "ранее"
                         )
-                        await send_card_message(self.bot, task.chat_id, existing, kb)
+                        title_escaped = html.escape(existing.title or "Без названия")
+                        kb_dup = InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(text="📖 Открыть карточку", callback_data=f"open_bm:{existing.id}"),
+                                    InlineKeyboardButton(text="🔄 Обновить саммари", callback_data=f"refresh_summary:{existing.id}"),
+                                ]
+                            ]
+                        )
+                        await self._safe_edit_status(
+                            task.chat_id,
+                            task.status_message_id,
+                            (
+                                f"ℹ️ <b>Эта ссылка уже сохранена в вашей базе!</b>\n"
+                                f"📅 Добавлена: <i>{date_str}</i>\n\n"
+                                f"📌 <b>{title_escaped}</b>"
+                            ),
+                            reply_markup=kb_dup,
+                        )
                         return
 
                 # Progress State 1: Скачивание
@@ -264,6 +283,16 @@ class IngestionQueueService:
                 tags = await tag_repo.get_or_create_tags(task.user_id, assigned_tags)
                 photos_json = json.dumps(task.photo_ids) if task.photo_ids else None
 
+                from app.services.category_detector import detect_category
+                llm_cat = getattr(enrichment, "category", None) if "enrichment" in locals() and enrichment else None
+                detected_category = detect_category(
+                    title=extracted.title or "",
+                    text=final_full_text,
+                    tags=assigned_tags,
+                    url=extracted.url,
+                    llm_category=llm_cat,
+                )
+
                 bookmark = await bookmark_repo.create(
                     user_id=task.user_id,
                     content_type=extracted.content_type,
@@ -282,6 +311,7 @@ class IngestionQueueService:
                     telegram_video_id=extracted.telegram_video_id or task.telegram_video_id,
                     telegram_document_id=task.telegram_document_id,
                     photos_json=photos_json,
+                    category=detected_category,
                 )
                 await session.commit()
 

@@ -32,6 +32,7 @@ async def init_databases():
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS telegram_document_id TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE;",
+        "ALTER TABLE bookmarks ADD COLUMN IF NOT EXISTS category VARCHAR(100);",
         # SQLite fallback syntax (without IF NOT EXISTS):
         "ALTER TABLE bookmarks ADD COLUMN image_url TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN telegram_photo_id TEXT;",
@@ -39,6 +40,7 @@ async def init_databases():
         "ALTER TABLE bookmarks ADD COLUMN telegram_document_id TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN photos_json TEXT;",
         "ALTER TABLE bookmarks ADD COLUMN is_pinned BOOLEAN DEFAULT 0;",
+        "ALTER TABLE bookmarks ADD COLUMN category VARCHAR(100);",
     ]
 
     for stmt in migration_statements:
@@ -112,6 +114,7 @@ async def main():
         await bot.set_my_commands([
             BotCommand(command="menu", description="📱 Открыть главное меню"),
             BotCommand(command="bookmarks", description="📥 Мои закладки"),
+            BotCommand(command="categories", description="📁 Рубрики и категории"),
             BotCommand(command="favorites", description="⭐ Избранные закладки"),
             BotCommand(command="pinned", description="📌 Закреплённые заметки"),
             BotCommand(command="yoink", description="🎬 Скачать видео / медиа"),

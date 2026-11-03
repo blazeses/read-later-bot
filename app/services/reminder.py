@@ -3,6 +3,7 @@ import html
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from aiogram import Bot
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.logger import log
@@ -76,6 +77,20 @@ class ReminderScheduler:
                     await repo.mark_as_sent(reminder.id)
                     await session.commit()
                     log.info(f"Delivered reminder {reminder.id} to user {reminder.user_id}")
+                except TelegramRetryAfter as retry_err:
+                    log.warning(f"Telegram flood limit hit: sleeping {retry_err.retry_after}s")
+                    await asyncio.sleep(retry_err.retry_after + 1)
+                    # Retry once after wait
+                    try:
+                        await self._deliver_reminder(reminder.user_id, bookmark)
+                        await repo.mark_as_sent(reminder.id)
+                        await session.commit()
+                    except Exception as retry_fail:
+                        log.error(f"Retry deliver failed for {reminder.id}: {retry_fail}")
+                except TelegramForbiddenError as fb_err:
+                    log.warning(f"User {reminder.user_id} blocked bot: {fb_err}. Marking reminder sent.")
+                    await repo.mark_as_sent(reminder.id)
+                    await session.commit()
                 except Exception as send_err:
                     err_msg = str(send_err).lower()
                     log.warning(f"Failed to deliver reminder {reminder.id} to {reminder.user_id}: {send_err}")
@@ -118,15 +133,19 @@ class ReminderScheduler:
                 InlineKeyboardButton(text="📖 Открыть материал", callback_data=f"open_bm:{bm_id_str}"),
             ],
             [
-                InlineKeyboardButton(text="⏱ Отложить на 1 ч", callback_data=f"snooze:{bm_id_str}:1h"),
-                InlineKeyboardButton(text="🌅 На завтра", callback_data=f"snooze:{bm_id_str}:tomorrow"),
+                InlineKeyboardButton(text="⏱ +15 мин", callback_data=f"snooze:{bm_id_str}:15m"),
+                InlineKeyboardButton(text="⏳ +1 ч", callback_data=f"snooze:{bm_id_str}:1h"),
+                InlineKeyboardButton(text="🌅 Завтра", callback_data=f"snooze:{bm_id_str}:tomorrow"),
+            ],
+            [
+                InlineKeyboardButton(text="🗑 Завершить", callback_data=f"snooze:{bm_id_str}:dismiss"),
             ],
         ]
 
         if bookmark.url and bookmark.url.startswith("http"):
-            keyboard_buttons.append([
-                InlineKeyboardButton(text="🌐 Открыть оригинал", url=bookmark.url)
-            ])
+            keyboard_buttons[-1].append(
+                InlineKeyboardButton(text="🌐 Оригинал", url=bookmark.url)
+            )
 
         reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
