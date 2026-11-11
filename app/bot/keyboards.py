@@ -117,7 +117,7 @@ def get_bookmark_card_keyboard(
 
     # 3. Actions: Text toggle/edit, tags, reminder, delete
     remind_cb = make_safe_callback("remind_menu", bookmark_id)
-    delete_cb = make_safe_callback("delete", bookmark_id)
+    delete_cb = make_safe_callback("delete", bookmark_id, np_safe, current_page)
 
     if is_note:
         edit_note_cb = make_safe_callback("edit_note", bookmark_id)

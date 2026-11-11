@@ -1,6 +1,7 @@
 import asyncio
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -1299,9 +1300,12 @@ async def cb_toggle_view(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("delete:"))
 async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
-    bookmark_id_str = callback.data.split(":")[1]
+    parts = callback.data.split(":")
+    bookmark_id_str = parts[1]
     bookmark_id = uuid.UUID(bookmark_id_str)
     user_id = callback.from_user.id
+    nav_prefix = parts[2] if len(parts) > 2 and parts[2] != "_" else "rl"
+    page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
 
     repo = BookmarkRepository(session)
     deleted = await repo.delete(bookmark_id, user_id)
@@ -1314,15 +1318,80 @@ async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
             except Exception as e:
                 log.warning(f"Error removing vectors from Qdrant: {e}")
 
+        from app.bot.handlers.manage import render_bookmarks_list, PAGE_SIZE
+        from app.bot.keyboards import get_bookmarks_list_keyboard
+
+        is_favorites_only = (nav_prefix == "fl")
+        is_pinned_only = (nav_prefix == "pl")
+        tag_filter = "избранное" if is_favorites_only else None
+        pinned_filter = True if is_pinned_only else None
+
+        offset = max(0, (page - 1) * PAGE_SIZE)
+        bookmarks, total = await repo.list_bookmarks(
+            user_id=user_id,
+            tag_name=tag_filter,
+            is_pinned=pinned_filter,
+            limit=PAGE_SIZE,
+            offset=offset,
+        )
+
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        if page > total_pages and total > 0:
+            page = total_pages
+            offset = max(0, (page - 1) * PAGE_SIZE)
+            bookmarks, total = await repo.list_bookmarks(
+                user_id=user_id,
+                tag_name=tag_filter,
+                is_pinned=pinned_filter,
+                limit=PAGE_SIZE,
+                offset=offset,
+            )
+
         msg = callback.message
-        if msg.photo or msg.video or msg.animation:
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-            await msg.answer("🗑 <b>Закладка успешно удалена.</b>", parse_mode="HTML")
+        if total == 0:
+            empty_text = (
+                "🗑 <b>Закладка успешно удалена.</b>\n\n"
+                "📭 <b>У вас больше нет сохраненных закладок.</b>\n"
+                "Отправьте мне ссылку, текст, фото или файл, чтобы сохранить новый материал!"
+            )
+            if msg.photo or msg.video or msg.animation:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                await msg.answer(empty_text, parse_mode="HTML")
+            else:
+                await msg.edit_text(empty_text, parse_mode="HTML")
         else:
-            await msg.edit_text("🗑 <b>Закладка успешно удалена.</b>", parse_mode="HTML")
+            list_text = render_bookmarks_list(
+                bookmarks,
+                current_page=page,
+                total_count=total,
+                limit=PAGE_SIZE,
+                is_unread_only=False,
+                is_pinned_only=is_pinned_only,
+                is_favorites_only=is_favorites_only,
+            )
+            panel_text = f"🗑 <i>Закладка удалена.</i>\n\n{list_text}"
+            kb = get_bookmarks_list_keyboard(
+                bookmarks,
+                current_page=page,
+                total_pages=total_pages,
+                prefix=nav_prefix if nav_prefix in ("rl", "fl", "pl") else "rl",
+            )
+
+            if msg.photo or msg.video or msg.animation:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                await msg.answer(panel_text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+            else:
+                try:
+                    await msg.edit_text(panel_text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+                except Exception:
+                    await msg.answer(panel_text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
         await callback.answer("Удалено")
     else:
         await callback.answer("Закладка уже удалена или не найдена.", show_alert=True)
