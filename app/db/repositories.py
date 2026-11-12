@@ -328,7 +328,9 @@ class BookmarkRepository:
         if is_pinned is not None:
             filters.append(Bookmark.is_pinned == is_pinned)
         if category is not None:
-            filters.append(Bookmark.category == category)
+            from app.services.category_detector import get_category_variants
+            variants = get_category_variants(category)
+            filters.append(Bookmark.category.in_(variants))
         if content_type is not None:
             filters.append(Bookmark.content_type == content_type)
         if date_from is not None:
@@ -363,6 +365,7 @@ class BookmarkRepository:
         return items, total
 
     async def get_categories_with_counts(self, user_id: int) -> List[Tuple[str, int]]:
+        from app.services.category_detector import get_category_by_code, get_category_code
         stmt = (
             select(Bookmark.category, func.count(Bookmark.id).label("count"))
             .where(and_(Bookmark.user_id == user_id, Bookmark.category.is_not(None)))
@@ -370,7 +373,14 @@ class BookmarkRepository:
             .order_by(desc("count"))
         )
         res = await self.session.execute(stmt)
-        return [(row[0], row[1]) for row in res.all() if row[0]]
+        counts: dict[str, int] = {}
+        for raw_cat, count in res.all():
+            if not raw_cat:
+                continue
+            code = get_category_code(raw_cat)
+            canonical = get_category_by_code(code)
+            counts[canonical] = counts.get(canonical, 0) + count
+        return sorted(counts.items(), key=lambda x: x[1], reverse=True)
 
     async def get_bookmarks_by_category(
         self,

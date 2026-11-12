@@ -437,64 +437,157 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
 
 # --- Categories Browsing ---
 
+async def render_categories_menu(user_id: int, session: AsyncSession):
+    from sqlalchemy import select, and_
+    from sqlalchemy.orm import selectinload
+    from app.services.category_detector import detect_category
+    from app.bot.keyboards import get_categories_keyboard
+
+    # Auto-categorize legacy bookmarks with category IS NULL
+    uncat_stmt = (
+        select(Bookmark)
+        .options(selectinload(Bookmark.tags))
+        .where(and_(Bookmark.user_id == user_id, Bookmark.category.is_(None)))
+    )
+    res = await session.execute(uncat_stmt)
+    uncategorized = res.scalars().all()
+    if uncategorized:
+        for b in uncategorized:
+            tag_names = [t.name for t in b.tags] if b.tags else []
+            b.category = detect_category(
+                title=b.title,
+                summary=b.summary,
+                full_text=b.full_text,
+                tags=tag_names,
+                url=b.url,
+            )
+        await session.commit()
+
+    repo = BookmarkRepository(session)
+    cats = await repo.get_categories_with_counts(user_id)
+    if not cats:
+        return None, None
+
+    kb = get_categories_keyboard(cats)
+    total_cats = sum(c for _, c in cats)
+    text = (
+        f"📁 <b>Категории материалов ({total_cats} закладок):</b>\n\n"
+        "Выберите рубрику для просмотра сохранённых статей и заметок:"
+    )
+    return text, kb
+
+
 @router.message(Command("categories"))
 @router.message(F.text.in_({"📁 Категории", "Категории", "категории"}))
 async def cmd_categories(message: Message, session: AsyncSession):
-    repo = BookmarkRepository(session)
-    cats = await repo.get_categories_with_counts(message.from_user.id)
-    if not cats:
+    text, kb = await render_categories_menu(message.from_user.id, session)
+    if not text:
         await message.answer("📁 В вашей базе пока нет категоризированных закладок. Сохраните любую ссылку или заметку, и бот автоматически определит её рубрику!")
         return
-
-    from app.bot.keyboards import get_categories_keyboard
-    kb = get_categories_keyboard(cats)
-    total_cats = sum(c for _, c in cats)
-    await message.answer(
-        f"📁 <b>Категории материалов ({total_cats} закладок):</b>\n\n"
-        "Выберите рубрику для просмотра сохранённых статей и заметок:",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("cat_sel:"))
+@router.callback_query(F.data == "open_categories_menu")
+async def cb_open_categories_menu(callback: CallbackQuery, session: AsyncSession):
+    text, kb = await render_categories_menu(callback.from_user.id, session)
+    if not text:
+        await callback.answer("Категории не найдены.", show_alert=True)
+        return
+    msg = callback.message
+    if msg.photo or msg.video or msg.animation:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        try:
+            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cat:") | F.data.startswith("cat_sel:") | F.data.startswith("c_"))
 async def cb_category_select(callback: CallbackQuery, session: AsyncSession):
-    parts = callback.data.split(":")
-    category_name = parts[1]
-    page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    from app.services.category_detector import get_category_by_code, get_category_code
+    from app.bot.keyboards import get_bookmarks_list_keyboard
+
+    data = callback.data
+    if data.startswith("cat:"):
+        parts = data.split(":")
+        cat_key = parts[1]
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    elif data.startswith("c_"):
+        parts = data.split(":")
+        cat_key = parts[0][2:]  # strip 'c_'
+        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    elif data.startswith("cat_sel:"):
+        parts = data.split(":")
+        cat_key = parts[1]
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    else:
+        await callback.answer()
+        return
+
+    cat_code = get_category_code(cat_key)
+    canonical_name = get_category_by_code(cat_code)
 
     repo = BookmarkRepository(session)
-    limit = 5
-    offset = (page - 1) * limit
-    bookmarks, total = await repo.get_bookmarks_by_category(callback.from_user.id, category_name, limit=limit, offset=offset)
+    limit = PAGE_SIZE
+    offset = max(0, (page - 1) * limit)
+    bookmarks, total = await repo.get_bookmarks_by_category(callback.from_user.id, canonical_name, limit=limit, offset=offset)
 
     if not bookmarks:
         await callback.answer("В этой категории пока нет материалов.", show_alert=True)
         return
 
-    import math
     total_pages = max(1, math.ceil(total / limit))
 
-    from app.bot.keyboards import get_bookmarks_list_keyboard
-    lines = [f"📁 <b>Рубрика: {category_name}</b> (Стр. {page}/{total_pages}, всего: {total})\n"]
+    lines = [f"📁 <b>Рубрика: {canonical_name}</b> (Стр. {page}/{total_pages}, всего: {total})\n"]
     for idx, b in enumerate(bookmarks, start=1):
-        title = html.escape(b.title or "Без названия")
-        lines.append(f"<b>[{idx}]</b> {title}")
+        type_icon = "📄"
+        if b.content_type == ContentType.NOTE:
+            type_icon = "💬"
+        elif b.content_type == ContentType.YOUTUBE:
+            type_icon = "🎬"
+        elif b.content_type == ContentType.DOCUMENT:
+            type_icon = "📁"
+        elif b.content_type == ContentType.TWEET:
+            type_icon = "🐦"
 
-    lines.append("\nНажмите на номер статьи ниже, чтобы открыть карточку:")
+        pin_badge = "📌 <b>[Закреплено]</b> " if getattr(b, "is_pinned", False) else ""
+        safe_title = html.escape((b.title or "Без названия").strip())
+        domain_str = html.escape(b.domain or "заметка")
+        tags_str = " ".join([f"#{html.escape(t.name)}" for t in b.tags[:3]]) if b.tags else ""
+        tags_part = f" | {tags_str}" if tags_str else ""
+        lines.append(
+            f"<b>[{idx}]</b> {pin_badge}<b>{safe_title}</b>\n"
+            f"    {type_icon} 🌐 {domain_str} | ⏱ ~{b.reading_time_min} мин.{tags_part}\n"
+        )
+
+    lines.append("Нажмите на номер статьи ниже, чтобы открыть карточку:")
     text = "\n".join(lines)
 
     kb = get_bookmarks_list_keyboard(
         bookmarks=bookmarks,
         current_page=page,
         total_pages=total_pages,
-        prefix=f"cat_sel:{category_name}",
+        prefix=f"c_{cat_code}",
     )
 
-    try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    msg = callback.message
+    if msg.photo or msg.video or msg.animation:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        try:
+            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await msg.answer(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 

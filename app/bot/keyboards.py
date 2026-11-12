@@ -175,6 +175,13 @@ def get_bookmark_card_keyboard(
                 callback_data=make_safe_callback(nav_prefix, current_page),
             )
         )
+    elif nav_prefix and (nav_prefix.startswith("c_") or nav_prefix.startswith("cat:")):
+        builder.row(
+            InlineKeyboardButton(
+                text="« 📁 К рубрике",
+                callback_data=f"{nav_prefix}:{current_page}",
+            )
+        )
     elif nav_prefix == "filter_tag":
         builder.row(
             InlineKeyboardButton(
@@ -298,6 +305,11 @@ def get_bookmarks_list_keyboard(
             InlineKeyboardButton(text="📌 Закрепленные", callback_data="pl:1"),
             InlineKeyboardButton(text="🎲 Случайная", callback_data="next_random"),
         )
+    elif prefix.startswith("c_") or prefix.startswith("cat"):
+        builder.row(
+            InlineKeyboardButton(text="« 📁 К рубрикам", callback_data="open_categories_menu"),
+            InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1"),
+        )
 
     return builder.as_markup()
 
@@ -362,12 +374,14 @@ def get_page_picker_keyboard(
 
 
 def get_categories_keyboard(categories_with_counts: List[Tuple[str, int]]) -> InlineKeyboardMarkup:
+    from app.services.category_detector import get_category_code
     builder = InlineKeyboardBuilder()
     for cat_name, count in categories_with_counts:
+        code = get_category_code(cat_name)
         builder.button(
             text=f"{cat_name} ({count})",
-            callback_data=f"cat_sel:{cat_name[:30]}:1",
+            callback_data=f"cat:{code}:1",
         )
     builder.adjust(1)
-    builder.row(InlineKeyboardButton(text="📥 Все закладки", callback_data="bm_list:all:1"))
+    builder.row(InlineKeyboardButton(text="📥 Все закладки", callback_data="rl:1"))
     return builder.as_markup()

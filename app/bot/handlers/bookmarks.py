@@ -1323,22 +1323,24 @@ async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
 
         is_favorites_only = (nav_prefix == "fl")
         is_pinned_only = (nav_prefix == "pl")
+        is_category = nav_prefix.startswith("c_")
+        category_name = None
+        if is_category:
+            from app.services.category_detector import get_category_by_code
+            category_name = get_category_by_code(nav_prefix[2:])
+
         tag_filter = "избранное" if is_favorites_only else None
         pinned_filter = True if is_pinned_only else None
 
         offset = max(0, (page - 1) * PAGE_SIZE)
-        bookmarks, total = await repo.list_bookmarks(
-            user_id=user_id,
-            tag_name=tag_filter,
-            is_pinned=pinned_filter,
-            limit=PAGE_SIZE,
-            offset=offset,
-        )
-
-        total_pages = max(1, math.ceil(total / PAGE_SIZE))
-        if page > total_pages and total > 0:
-            page = total_pages
-            offset = max(0, (page - 1) * PAGE_SIZE)
+        if is_category and category_name:
+            bookmarks, total = await repo.get_bookmarks_by_category(
+                user_id=user_id,
+                category=category_name,
+                limit=PAGE_SIZE,
+                offset=offset,
+            )
+        else:
             bookmarks, total = await repo.list_bookmarks(
                 user_id=user_id,
                 tag_name=tag_filter,
@@ -1347,38 +1349,91 @@ async def cb_delete_bookmark(callback: CallbackQuery, session: AsyncSession):
                 offset=offset,
             )
 
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
+        if page > total_pages and total > 0:
+            page = total_pages
+            offset = max(0, (page - 1) * PAGE_SIZE)
+            if is_category and category_name:
+                bookmarks, total = await repo.get_bookmarks_by_category(
+                    user_id=user_id,
+                    category=category_name,
+                    limit=PAGE_SIZE,
+                    offset=offset,
+                )
+            else:
+                bookmarks, total = await repo.list_bookmarks(
+                    user_id=user_id,
+                    tag_name=tag_filter,
+                    is_pinned=pinned_filter,
+                    limit=PAGE_SIZE,
+                    offset=offset,
+                )
+
         msg = callback.message
         if total == 0:
-            empty_text = (
-                "🗑 <b>Закладка успешно удалена.</b>\n\n"
-                "📭 <b>У вас больше нет сохраненных закладок.</b>\n"
-                "Отправьте мне ссылку, текст, фото или файл, чтобы сохранить новый материал!"
-            )
-            if msg.photo or msg.video or msg.animation:
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                await msg.answer(empty_text, parse_mode="HTML")
+            if is_category:
+                empty_text = (
+                    "🗑 <b>Закладка успешно удалена.</b>\n\n"
+                    f"📁 В рубрике <b>{category_name}</b> больше нет материалов."
+                )
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                kb_empty = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="« 📁 К рубрикам", callback_data="open_categories_menu")],
+                    [InlineKeyboardButton(text="🕒 Все недавние", callback_data="rl:1")],
+                ])
+                if msg.photo or msg.video or msg.animation:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    await msg.answer(empty_text, reply_markup=kb_empty, parse_mode="HTML")
+                else:
+                    await msg.edit_text(empty_text, reply_markup=kb_empty, parse_mode="HTML")
             else:
-                await msg.edit_text(empty_text, parse_mode="HTML")
+                empty_text = (
+                    "🗑 <b>Закладка успешно удалена.</b>\n\n"
+                    "📭 <b>У вас больше нет сохраненных закладок.</b>\n"
+                    "Отправьте мне ссылку, текст, фото или файл, чтобы сохранить новый материал!"
+                )
+                if msg.photo or msg.video or msg.animation:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    await msg.answer(empty_text, parse_mode="HTML")
+                else:
+                    await msg.edit_text(empty_text, parse_mode="HTML")
         else:
-            list_text = render_bookmarks_list(
-                bookmarks,
-                current_page=page,
-                total_count=total,
-                limit=PAGE_SIZE,
-                is_unread_only=False,
-                is_pinned_only=is_pinned_only,
-                is_favorites_only=is_favorites_only,
-            )
-            panel_text = f"🗑 <i>Закладка удалена.</i>\n\n{list_text}"
-            kb = get_bookmarks_list_keyboard(
-                bookmarks,
-                current_page=page,
-                total_pages=total_pages,
-                prefix=nav_prefix if nav_prefix in ("rl", "fl", "pl") else "rl",
-            )
+            if is_category:
+                lines = [f"🗑 <i>Закладка удалена.</i>\n\n📁 <b>Рубрика: {category_name}</b> (Стр. {page}/{total_pages}, всего: {total})\n"]
+                for idx, b in enumerate(bookmarks, start=1):
+                    title = html.escape(b.title or "Без названия")
+                    lines.append(f"<b>[{idx}]</b> {title}")
+                lines.append("\nНажмите на номер статьи ниже, чтобы открыть карточку:")
+                panel_text = "\n".join(lines)
+                kb = get_bookmarks_list_keyboard(
+                    bookmarks,
+                    current_page=page,
+                    total_pages=total_pages,
+                    prefix=nav_prefix,
+                )
+            else:
+                list_text = render_bookmarks_list(
+                    bookmarks,
+                    current_page=page,
+                    total_count=total,
+                    limit=PAGE_SIZE,
+                    is_unread_only=False,
+                    is_pinned_only=is_pinned_only,
+                    is_favorites_only=is_favorites_only,
+                )
+                panel_text = f"🗑 <i>Закладка удалена.</i>\n\n{list_text}"
+                kb = get_bookmarks_list_keyboard(
+                    bookmarks,
+                    current_page=page,
+                    total_pages=total_pages,
+                    prefix=nav_prefix if nav_prefix in ("rl", "fl", "pl") else "rl",
+                )
 
             if msg.photo or msg.video or msg.animation:
                 try:
