@@ -213,6 +213,10 @@ async def process_search_query_state(message: Message, state: FSMContext, sessio
         from app.bot.handlers.manage import cmd_recent
         await cmd_recent(message, session)
         return
+    elif text in ("📁 Категории", "Категории", "категории"):
+        from app.bot.handlers.manage import cmd_categories
+        await cmd_categories(message, session)
+        return
     elif text in ("⭐ Избранное", "Избранное"):
         from app.bot.handlers.manage import cmd_favorites
         await cmd_favorites(message, session)
@@ -253,6 +257,34 @@ async def process_search_query_state(message: Message, state: FSMContext, sessio
         await message.answer("Поиск отменен.", reply_markup=get_main_reply_keyboard())
         return
     elif text.startswith("/"):
+        cmd = text.split()[0].lower()
+        if cmd in ("/categories", "/cats"):
+            from app.bot.handlers.manage import cmd_categories
+            await cmd_categories(message, session)
+            return
+        elif cmd in ("/bookmarks", "/recent"):
+            from app.bot.handlers.manage import cmd_recent
+            await cmd_recent(message, session)
+            return
+        elif cmd in ("/favorites", "/fav"):
+            from app.bot.handlers.manage import cmd_favorites
+            await cmd_favorites(message, session)
+            return
+        elif cmd in ("/pinned",):
+            from app.bot.handlers.manage import cmd_pinned
+            await cmd_pinned(message, session)
+            return
+        elif cmd in ("/tags",):
+            from app.bot.handlers.manage import cmd_tags
+            await cmd_tags(message, session)
+            return
+        elif cmd in ("/start", "/help"):
+            from app.bot.handlers.base import cmd_help, cmd_start
+            if cmd == "/start":
+                await cmd_start(message, session)
+            else:
+                await cmd_help(message)
+            return
         return
 
     await execute_search(message, text, session)

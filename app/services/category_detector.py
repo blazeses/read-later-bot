@@ -98,11 +98,13 @@ CATEGORY_ALIASES = {
 
 
 def detect_category(
-    title: str = "",
-    text: str = "",
+    title: Optional[str] = "",
+    text: Optional[str] = "",
     tags: Optional[List[str]] = None,
     url: Optional[str] = None,
     llm_category: Optional[str] = None,
+    summary: Optional[str] = None,
+    full_text: Optional[str] = None,
 ) -> str:
     """
     Intelligently assigns a canonical category to a bookmark.
@@ -134,8 +136,10 @@ def detect_category(
         return "🛒 Быт & Покупки"
 
     # 2. Text and Tags keyword rules
+    safe_title = (title or "").lower()
+    safe_text = (full_text or text or summary or "")[:2000].lower()
     tag_str = " ".join(tags or []).lower()
-    combined_content = f"{title.lower()} {tag_str} {text[:2000].lower()}"
+    combined_content = f"{safe_title} {tag_str} {safe_text}"
 
     it_keywords = (
         "python", "javascript", "typescript", "rust", "golang", "sql", "api",

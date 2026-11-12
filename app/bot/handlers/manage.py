@@ -438,30 +438,39 @@ async def cb_next_random(callback: CallbackQuery, session: AsyncSession):
 # --- Categories Browsing ---
 
 async def render_categories_menu(user_id: int, session: AsyncSession):
-    from sqlalchemy import select, and_
+    from sqlalchemy import select, and_, or_
     from sqlalchemy.orm import selectinload
     from app.services.category_detector import detect_category
     from app.bot.keyboards import get_categories_keyboard
 
-    # Auto-categorize legacy bookmarks with category IS NULL
-    uncat_stmt = (
-        select(Bookmark)
-        .options(selectinload(Bookmark.tags))
-        .where(and_(Bookmark.user_id == user_id, Bookmark.category.is_(None)))
-    )
-    res = await session.execute(uncat_stmt)
-    uncategorized = res.scalars().all()
-    if uncategorized:
-        for b in uncategorized:
-            tag_names = [t.name for t in b.tags] if b.tags else []
-            b.category = detect_category(
-                title=b.title,
-                summary=b.summary,
-                full_text=b.full_text,
-                tags=tag_names,
-                url=b.url,
+    # Auto-categorize legacy bookmarks with category IS NULL or empty
+    try:
+        uncat_stmt = (
+            select(Bookmark)
+            .options(selectinload(Bookmark.tags))
+            .where(
+                and_(
+                    Bookmark.user_id == user_id,
+                    or_(Bookmark.category.is_(None), Bookmark.category == ""),
+                )
             )
-        await session.commit()
+        )
+        res = await session.execute(uncat_stmt)
+        uncategorized = res.scalars().all()
+        if uncategorized:
+            for b in uncategorized:
+                tag_names = [t.name for t in b.tags] if b.tags else []
+                b.category = detect_category(
+                    title=b.title or "",
+                    text=(b.full_text or b.summary or ""),
+                    tags=tag_names,
+                    url=b.url,
+                    summary=b.summary,
+                    full_text=b.full_text,
+                )
+            await session.commit()
+    except Exception as e:
+        log.warning(f"Error during legacy category backfill: {e}")
 
     repo = BookmarkRepository(session)
     cats = await repo.get_categories_with_counts(user_id)
@@ -479,116 +488,130 @@ async def render_categories_menu(user_id: int, session: AsyncSession):
 
 @router.message(Command("categories"))
 @router.message(F.text.in_({"📁 Категории", "Категории", "категории"}))
-async def cmd_categories(message: Message, session: AsyncSession):
-    text, kb = await render_categories_menu(message.from_user.id, session)
-    if not text:
-        await message.answer("📁 В вашей базе пока нет категоризированных закладок. Сохраните любую ссылку или заметку, и бот автоматически определит её рубрику!")
-        return
-    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+async def cmd_categories(message: Message, session: AsyncSession, state: FSMContext | None = None):
+    if state:
+        await state.clear()
+    try:
+        text, kb = await render_categories_menu(message.from_user.id, session)
+        if not text:
+            await message.answer("📁 В вашей базе пока нет категоризированных закладок. Сохраните любую ссылку или заметку, и бот автоматически определит её рубрику!")
+            return
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        log.exception(f"Error in cmd_categories: {e}")
+        await message.answer("⚠️ Не удалось открыть категории. Попробуйте еще раз.")
 
 
 @router.callback_query(F.data == "open_categories_menu")
 async def cb_open_categories_menu(callback: CallbackQuery, session: AsyncSession):
-    text, kb = await render_categories_menu(callback.from_user.id, session)
-    if not text:
-        await callback.answer("Категории не найдены.", show_alert=True)
-        return
-    msg = callback.message
-    if msg.photo or msg.video or msg.animation:
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
-    else:
-        try:
-            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
+    try:
+        text, kb = await render_categories_menu(callback.from_user.id, session)
+        if not text:
+            await callback.answer("Категории не найдены.", show_alert=True)
+            return
+        msg = callback.message
+        if msg.photo or msg.video or msg.animation:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
             await msg.answer(text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer()
+        else:
+            try:
+                await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        log.exception(f"Error in cb_open_categories_menu: {e}")
+        await callback.answer("Ошибка при открытии рубрик.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("cat:") | F.data.startswith("cat_sel:") | F.data.startswith("c_"))
 async def cb_category_select(callback: CallbackQuery, session: AsyncSession):
-    from app.services.category_detector import get_category_by_code, get_category_code
-    from app.bot.keyboards import get_bookmarks_list_keyboard
+    try:
+        from app.services.category_detector import get_category_by_code, get_category_code
+        from app.bot.keyboards import get_bookmarks_list_keyboard
 
-    data = callback.data
-    if data.startswith("cat:"):
-        parts = data.split(":")
-        cat_key = parts[1]
-        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
-    elif data.startswith("c_"):
-        parts = data.split(":")
-        cat_key = parts[0][2:]  # strip 'c_'
-        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-    elif data.startswith("cat_sel:"):
-        parts = data.split(":")
-        cat_key = parts[1]
-        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
-    else:
-        await callback.answer()
-        return
+        data = callback.data
+        if data.startswith("cat:"):
+            parts = data.split(":")
+            cat_key = parts[1]
+            page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+        elif data.startswith("c_"):
+            parts = data.split(":")
+            cat_key = parts[0][2:]  # strip 'c_'
+            page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+        elif data.startswith("cat_sel:"):
+            parts = data.split(":")
+            cat_key = parts[1]
+            page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+        else:
+            await callback.answer()
+            return
 
-    cat_code = get_category_code(cat_key)
-    canonical_name = get_category_by_code(cat_code)
+        cat_code = get_category_code(cat_key)
+        canonical_name = get_category_by_code(cat_code)
 
-    repo = BookmarkRepository(session)
-    limit = PAGE_SIZE
-    offset = max(0, (page - 1) * limit)
-    bookmarks, total = await repo.get_bookmarks_by_category(callback.from_user.id, canonical_name, limit=limit, offset=offset)
+        repo = BookmarkRepository(session)
+        limit = PAGE_SIZE
+        offset = max(0, (page - 1) * limit)
+        bookmarks, total = await repo.get_bookmarks_by_category(callback.from_user.id, canonical_name, limit=limit, offset=offset)
 
-    if not bookmarks:
-        await callback.answer("В этой категории пока нет материалов.", show_alert=True)
-        return
+        if not bookmarks:
+            await callback.answer("В этой категории пока нет материалов.", show_alert=True)
+            return
 
-    total_pages = max(1, math.ceil(total / limit))
+        total_pages = max(1, math.ceil(total / limit))
 
-    lines = [f"📁 <b>Рубрика: {canonical_name}</b> (Стр. {page}/{total_pages}, всего: {total})\n"]
-    for idx, b in enumerate(bookmarks, start=1):
-        type_icon = "📄"
-        if b.content_type == ContentType.NOTE:
-            type_icon = "💬"
-        elif b.content_type == ContentType.YOUTUBE:
-            type_icon = "🎬"
-        elif b.content_type == ContentType.DOCUMENT:
-            type_icon = "📁"
-        elif b.content_type == ContentType.TWEET:
-            type_icon = "🐦"
+        lines = [f"📁 <b>Рубрика: {canonical_name}</b> (Стр. {page}/{total_pages}, всего: {total})\n"]
+        for idx, b in enumerate(bookmarks, start=1):
+            type_icon = "📄"
+            if b.content_type == ContentType.NOTE:
+                type_icon = "💬"
+            elif b.content_type == ContentType.YOUTUBE:
+                type_icon = "🎬"
+            elif b.content_type == ContentType.DOCUMENT:
+                type_icon = "📁"
+            elif b.content_type == ContentType.TWEET:
+                type_icon = "🐦"
 
-        pin_badge = "📌 <b>[Закреплено]</b> " if getattr(b, "is_pinned", False) else ""
-        safe_title = html.escape((b.title or "Без названия").strip())
-        domain_str = html.escape(b.domain or "заметка")
-        tags_str = " ".join([f"#{html.escape(t.name)}" for t in b.tags[:3]]) if b.tags else ""
-        tags_part = f" | {tags_str}" if tags_str else ""
-        lines.append(
-            f"<b>[{idx}]</b> {pin_badge}<b>{safe_title}</b>\n"
-            f"    {type_icon} 🌐 {domain_str} | ⏱ ~{b.reading_time_min} мин.{tags_part}\n"
+            pin_badge = "📌 <b>[Закреплено]</b> " if getattr(b, "is_pinned", False) else ""
+            safe_title = html.escape((b.title or "Без названия").strip())
+            domain_str = html.escape(b.domain or "заметка")
+            tags_str = " ".join([f"#{html.escape(t.name)}" for t in b.tags[:3]]) if b.tags else ""
+            tags_part = f" | {tags_str}" if tags_str else ""
+            lines.append(
+                f"<b>[{idx}]</b> {pin_badge}<b>{safe_title}</b>\n"
+                f"    {type_icon} 🌐 {domain_str} | ⏱ ~{b.reading_time_min} мин.{tags_part}\n"
+            )
+
+        lines.append("Нажмите на номер статьи ниже, чтобы открыть карточку:")
+        text = "\n".join(lines)
+
+        kb = get_bookmarks_list_keyboard(
+            bookmarks=bookmarks,
+            current_page=page,
+            total_pages=total_pages,
+            prefix=f"c_{cat_code}",
         )
 
-    lines.append("Нажмите на номер статьи ниже, чтобы открыть карточку:")
-    text = "\n".join(lines)
-
-    kb = get_bookmarks_list_keyboard(
-        bookmarks=bookmarks,
-        current_page=page,
-        total_pages=total_pages,
-        prefix=f"c_{cat_code}",
-    )
-
-    msg = callback.message
-    if msg.photo or msg.video or msg.animation:
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
-    else:
-        try:
-            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
+        msg = callback.message
+        if msg.photo or msg.video or msg.animation:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
             await msg.answer(text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer()
+        else:
+            try:
+                await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        log.exception(f"Error in cb_category_select: {e}")
+        await callback.answer("Ошибка при открытии рубрики.", show_alert=True)
 
 
 # --- Tags Filter and Management ---
