@@ -197,3 +197,36 @@ async def test_category_code_lookup_and_variants(async_session: AsyncSession):
     cat_dict = dict(cats)
     assert cat_dict["💼 Работа & IT"] == 2
     assert cat_dict["💡 Разное"] == 1
+
+
+@pytest.mark.asyncio
+async def test_render_categories_menu_with_legacy_and_none_bookmarks(async_session: AsyncSession):
+    from app.bot.handlers.manage import render_categories_menu
+
+    repo = BookmarkRepository(async_session)
+    user = User(telegram_id=555444)
+    async_session.add(user)
+    await async_session.flush()
+
+    # Create bookmarks with category=None and None in fields
+    await repo.create(
+        user_id=555444,
+        content_type=ContentType.ARTICLE,
+        title=None,
+        full_text="Бэкенд сервис на FastAPI и Docker",
+        category=None,
+    )
+    await repo.create(
+        user_id=555444,
+        content_type=ContentType.NOTE,
+        title="Заметка про инвестиции",
+        summary="Криптовалюты и акции",
+        category=None,
+    )
+    await async_session.commit()
+
+    text, kb = await render_categories_menu(555444, async_session)
+    assert text is not None
+    assert "Категории материалов" in text
+    assert kb is not None
+    assert len(kb.inline_keyboard) > 0
