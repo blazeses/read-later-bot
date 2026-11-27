@@ -1,6 +1,7 @@
 import asyncio
 import signal
 import sys
+import os
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -16,6 +17,31 @@ from sqlalchemy import text
 from app.services.digest import DigestScheduler
 from app.services.ingest import IngestionQueueService
 from app.services.reminder import ReminderScheduler
+
+
+async def start_dummy_healthcheck():
+    """Запускает минимальный HTTP healthcheck сервер на порту $PORT для Render Web Service."""
+    port_str = os.environ.get("PORT")
+    if not port_str:
+        return
+    try:
+        from aiohttp import web
+        app = web.Application()
+
+        async def handle_ping(request):
+            return web.Response(text="OK - Read Later Bot is running")
+
+        app.router.add_get("/", handle_ping)
+        app.router.add_get("/health", handle_ping)
+        app.router.add_get("/ping", handle_ping)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", int(port_str))
+        await site.start()
+        log.info(f"Healthcheck HTTP server listening on port {port_str} for cloud hosting.")
+    except Exception as e:
+        log.warning(f"Could not start dummy healthcheck server: {e}")
 
 
 async def init_databases():
@@ -72,8 +98,14 @@ async def main():
         log.critical("BOT_TOKEN is not configured! Please provide BOT_TOKEN in .env or environment variables.")
         return
 
+    # 0. Start healthcheck server if PORT is provided (Render / cloud web service)
+    await start_dummy_healthcheck()
+
     # 1. Initialize DB and Vector Collections
-    await init_databases()
+    try:
+        await init_databases()
+    except Exception as db_err:
+        log.error(f"Initial database setup error: {db_err}. The bot will continue running and retry upon incoming requests.")
 
     # 2. Setup Bot & Dispatcher
     bot = Bot(
